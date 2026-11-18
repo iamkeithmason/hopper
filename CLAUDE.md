@@ -2,6 +2,8 @@
 
 Read `README.md` for the layout. Project docs (decisions, build log, runbooks) live in the claude.ai Project "Hopper"; the feature backlog is in Notion (Hopper hub → Feature Backlog, ICE scored).
 
+Every backlog ticket carries a **Hands-off** flag: *Runs unattended* (Claude can do it start to finish), *Needs a pop-up* (only a Supabase confirmation), or *Needs Keith* (design calls, phone testing, secrets). Set it when you create or rescope a ticket, and say which tickets are hands-off when Keith asks what to work on.
+
 ## Rules
 
 - Locked notes must never reach an AI model. AI work reads through `hopper.notes_for_ai`. Never add a code path that sends `hopper.notes` content to a model without that filter.
