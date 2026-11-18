@@ -51,12 +51,27 @@ async function api(body) {
 function show(screen) { for (const s of ["signin", "home"]) $(s).hidden = s !== screen; }
 
 let booted = false;
+const PENDING = "hopper.pendingShare";
 async function boot() {
   if (booted) return;
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
   readShare();
   const { data: { session } } = await sb.auth.getSession();
-  if (!session) { show("signin"); return; }
+  if (!session) {
+    // HOP-9: keep a share through sign-in. The magic link reloads the app, so park the share on this device.
+    if (state.share) {
+      try { localStorage.setItem(PENDING, JSON.stringify({ ...state.share, at: Date.now() })); } catch {}
+      $("signin-msg").textContent = "Your share is kept. Sign in and it will be ready to save.";
+    }
+    show("signin"); return;
+  }
+  if (!state.share) {
+    try {
+      const p = JSON.parse(localStorage.getItem(PENDING) || "null");
+      if (p && Date.now() - p.at < 86400000) state.share = { url: p.url || "", text: p.text || "", title: p.title || "" };
+    } catch {}
+  }
+  try { localStorage.removeItem(PENDING); } catch {}
   if (booted) return;
   booted = true;
   show("home");
