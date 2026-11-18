@@ -39,12 +39,11 @@ header#top.hide { transform: translateY(-100%); }
 .pills.sub button { border: 0; background: var(--chip); border-radius: 14px; padding: 4px 12px; font-size: 13px; }
 .pills.sub button.on { background: var(--ink); color: var(--bg); }
 
-/* feed: masonry by columns */
+/* feed: masonry, columns filled by app.js (shortest column first, cards never move) */
 main { padding: 6px 8px 40px; max-width: 1400px; margin: 0 auto; }
-.feed { columns: 2; column-gap: 8px; }
-@media (min-width: 700px) { .feed { columns: 3; } }
-@media (min-width: 1000px) { .feed { columns: 4; column-gap: 12px; } }
-@media (min-width: 1300px) { .feed { columns: 5; } }
+.feed { display: flex; align-items: flex-start; gap: 8px; }
+.feed > .col { flex: 1 1 0; min-width: 0; }
+@media (min-width: 1000px) { .feed { gap: 12px; } }
 .card { break-inside: avoid; margin: 0 0 8px; background: var(--card); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); cursor: pointer; position: relative; display: block; width: 100%; text-align: left; }
 @media (min-width: 1000px) { .card { margin-bottom: 12px; } }
 .card img { display: block; width: 100%; height: auto; background: var(--chip); }

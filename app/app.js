@@ -152,18 +152,55 @@ function card(n) {
     el("div", { class: "hover" }, projects ? el("b", {}, projects) : null, el("span", {}, fmtDate(n.created_at)), n.host ? el("span", {}, n.host) : null));
 }
 
+// ---------- masonry ----------
+// Each card goes into the shortest column once and never moves. (CSS columns re-flowed the whole board whenever a
+// batch loaded or an image arrived, so cards jumped between columns while scrolling.) data-seq keeps the
+// newest-first order, so a resize that changes the column count can lay the cards out again.
+const colCount = () => (innerWidth >= 1300 ? 5 : innerWidth >= 1000 ? 4 : innerWidth >= 700 ? 3 : 2);
+function layout(box, cards = []) {
+  const n = colCount();
+  box.dataset.cols = n; box.seq = 0;
+  box.replaceChildren(...Array.from({ length: n }, () => el("div", { class: "col" })));
+  place(box, cards);
+}
+function place(box, cards) {
+  if (!box.children.length) layout(box);
+  const cols = [...box.children];
+  const h = cols.map((c) => c.offsetHeight);
+  for (const c of cards) {
+    const i = h.indexOf(Math.min(...h));
+    c.dataset.seq = box.seq++;
+    cols[i].append(c);
+    // An image that hasn't loaded yet has no height: count it as square so the next card doesn't pile in behind it.
+    const img = c.querySelector("img");
+    h[i] += c.offsetHeight + (img && !img.complete ? c.offsetWidth : 0) + 10;
+  }
+}
+const hasCards = (box) => !!box.querySelector(".card");
+let resizeTimer;
+addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    for (const box of [$("pinned"), $("feed")]) {
+      if (Number(box.dataset.cols) === colCount()) continue;
+      const cards = [...box.querySelectorAll(":scope > .col > .card")].sort((a, b) => a.dataset.seq - b.dataset.seq);
+      layout(box, cards);
+    }
+  }, 150);
+});
+
 async function loadPinned() {
   const wrap = $("pinned-wrap");
   if (state.q || state.archived) { wrap.hidden = true; return; }
   try {
     const { notes } = await api({ action: "feed", pinned: true, project_id: state.project, topic: state.topic, limit: 40 });
-    $("pinned").replaceChildren(...notes.map(card));
     wrap.hidden = notes.length === 0;
+    layout($("pinned"), notes.map(card));
   } catch { wrap.hidden = true; }
 }
 
 function resetFeed() {
-  state.oldest = null; state.done = false; $("feed").replaceChildren(); $("status").textContent = "";
+  state.oldest = null; state.done = false; layout($("feed")); $("status").textContent = "";
   window.scrollTo({ top: 0 });
   loadPinned();
   loadMore();
@@ -175,15 +212,15 @@ async function loadMore() {
   try {
     if (state.q) {
       const { notes } = await api({ action: "search", q: state.q });
-      $("feed").append(...notes.map(card));
+      place($("feed"), notes.map(card));
       $("status").textContent = notes.length ? `Closest matches for “${state.q}”` : `Nothing close to “${state.q}”`;
       state.done = true;
     } else {
       const { notes } = await api({ action: "feed", project_id: state.project, topic: state.topic, before: state.oldest, archived: state.archived, pinned: state.archived ? undefined : false, limit: 40 });
-      $("feed").append(...notes.map(card));
+      place($("feed"), notes.map(card));
       if (notes.length) state.oldest = notes[notes.length - 1].created_at;
       if (notes.length < 40) state.done = true;
-      if (state.archived && !$("feed").children.length) $("status").textContent = "Nothing archived.";
+      if (state.archived && !hasCards($("feed"))) $("status").textContent = "Nothing archived.";
     }
   } catch (e) { $("status").textContent = e.message; state.done = true; }
   state.loading = false; $("more").textContent = "";
@@ -209,7 +246,10 @@ addEventListener("scroll", () => {
 // Replace or remove a card in the lists after an edit, without reloading.
 function refreshCard(id, next) {
   for (const old of document.querySelectorAll(`.card[data-id="${id}"]`)) {
-    if (!next) old.remove(); else old.replaceWith(card(next));
+    if (!next) { old.remove(); continue; }
+    const fresh = card(next);
+    if (old.dataset.seq) fresh.dataset.seq = old.dataset.seq;
+    old.replaceWith(fresh);
   }
 }
 
@@ -519,7 +559,7 @@ $("d-delete").addEventListener("click", async () => {
 function route() {
   const m = location.pathname.match(/^\/n\/([0-9a-f-]{36})$/);
   if (m) openNote(m[1], false); else if (!$("detail").hidden) closeDetail();
-  if (!$("feed").children.length) resetFeed();
+  if (!hasCards($("feed"))) resetFeed();
 }
 
 // ---------- capture (share sheet and New) ----------
