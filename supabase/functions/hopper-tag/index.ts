@@ -1,7 +1,10 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.4";
 
-// Hopper tagging function, version 4.
+// Hopper tagging function, version 5.
+// v5 (18 Nov): keeps project tags filed by closeness (added_by rule) or added by Keith. The model breaks ties:
+// a faint Nearby project it also names becomes firm; its own projects are added only when nothing filed the note.
+// "Useful for, not made for" rule; prompt v5; { ids: [...] } mode for app notes; notes read through notes_for_ai.
 // Reads UNLOCKED notes only, asks Claude for facets, and (when asked) saves them.
 // Changes from v3: fetched page text and stored images go to the model; a write step
 // saves tags to the people, works, projects and topics tables and locks notes the
@@ -10,7 +13,8 @@ import postgres from "npm:postgres@3.4.4";
 // Body (one of):
 //   { texts: [...], model }                            test notes, never stored (as v3)
 //   { keep_files: [...], model, write?: bool }         up to 15 stored notes
-//   { next: n, model, write?: bool }                   next n untagged notes (max 15)
+//   { next: n, model, write?: bool }                   next n untagged notes (max 15), untouched for two minutes
+//   { ids: [...], model, write?: bool }                up to 15 notes by id (used straight after capture)
 //   { batch: "submit", model, limit?: n }              submit untagged notes to the Batch API
 //   { batch: "status", id }                            check a batch
 //   { batch: "collect", id, offset?: n, limit?: n }    save results from an ended batch
@@ -18,7 +22,7 @@ import postgres from "npm:postgres@3.4.4";
 // Guarded by a hashed invoke token. The API key comes from the HOPPER_API secret.
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 3 });
-const PROMPT_VERSION = 4;
+const PROMPT_VERSION = 5;
 const IMAGE_BUCKET = "hopper-images";
 const MODELS = ["claude-haiku-5-5", "claude-sonnet-5-5"];
 const API = "https://api.anthropic.com/v1";
@@ -51,7 +55,7 @@ const TOOL = {
 
 // Prompt text unchanged from v3 apart from the PAGE TEXT and IMAGES paragraphs.
 function systemPrompt(topics: string[], projects: { name: string; description: string; tells: string }[]) {
-  return `You tag notes in one person's private notebook (imported from Google Keep). For each note, call record_tags exactly once and write nothing else.
+  return `You tag notes in one person's private notebook (imported from Google Keep or saved in the Hopper app). For each note, call record_tags exactly once and write nothing else.
 
 FORMAT
 - quote: someone else's words copied down (a passage, a highlight, a creed, a verse).
@@ -70,7 +74,7 @@ WORKS: the book, treatise, article, game or film a note quotes or concerns.
 
 PERIOD: the period of the person or work only ("2nd century", "20th century"). Leave empty otherwise.
 
-PROJECTS: most notes belong to no project. Assign one only when the note plainly matches a project's description or tells; a shared general subject is not enough. Use the exact project name. Game-design notes that fit no project get none. Theology reading with no essay in view gets none. When in doubt, assign none.
+PROJECTS: most notes belong to no project. Assign one only when the note plainly matches a project's description or tells; a shared general subject is not enough. A project tag means the note is useful for the project, not that it was made for it: a note saved before a project began still belongs to it if it helps it. Use the exact project name. Game-design notes that fit no project get none. Theology reading with no essay in view gets none. When in doubt, assign none.
 ${projects.map((p) => `- ${p.name}: ${p.description} Tells: ${p.tells}`).join("\n")}
 
 PAGE TEXT: for a bookmark, text fetched from the linked page may follow the note. Use it to judge format, topic, person and work, but the owner saved the link, not the page: a bookmark stays a bookmark. A person who wrote the linked article counts as its author.
@@ -87,6 +91,7 @@ function noteText(n: any, links: any[], usePages: boolean) {
   if (n.created_at) parts.push(`Created: ${String(n.created_at).slice(0, 10)}`);
   if (n.title) parts.push(`Title: ${n.title}`);
   if (n.keep_labels?.length) parts.push(`Owner's labels: ${n.keep_labels.join(", ")}`);
+  if (n.why_saved) parts.push(`Why the owner saved it: ${String(n.why_saved).slice(0, 1000)}`);
   if (n.body) parts.push(`Text:\n${String(n.body).slice(0, 6000)}`);
   if (n.list_items) parts.push(`Checklist:\n${(n.list_items as any[]).map((i) => `- ${i.text}`).join("\n").slice(0, 3000)}`);
   if (links.length) parts.push(`Links:\n${links.map((l) => `- [${l.kind}${l.is_dead ? ", dead" : ""}] ${l.page_title ?? ""} ${l.url}`).join("\n").slice(0, 2000)}`);
@@ -170,7 +175,8 @@ async function saveTags(noteId: string, t: any, model: string) {
     await tx`delete from hopper.note_topics where note_id = ${noteId} and confirmed = false`;
     await tx`delete from hopper.note_people where note_id = ${noteId} and confirmed = false`;
     await tx`delete from hopper.note_works where note_id = ${noteId} and confirmed = false`;
-    await tx`delete from hopper.note_projects where note_id = ${noteId} and confirmed = false`;
+    // Only the model's own unconfirmed project guesses are replaced; tags filed by closeness or added by Keith stay.
+    await tx`delete from hopper.note_projects where note_id = ${noteId} and confirmed = false and added_by = 'ai'`;
 
     if (t.sensitive) {
       // Lock first and keep nothing else the model said about the note.
@@ -225,24 +231,40 @@ async function saveTags(noteId: string, t: any, model: string) {
                values (${noteId}, ${work.id}, ${conf(w.confidence)}, false) on conflict do nothing`;
     }
 
+    // Projects: closeness filing comes first and the model breaks ties.
+    // A faint Nearby project the model also names becomes firm. The model's own projects are added
+    // only when nothing else has filed the note, and never one Keith has removed.
+    const existing = await tx`select project_id from hopper.note_projects where note_id = ${noteId}`;
     for (const p of t.projects ?? []) {
       // Projects are never created here: only Keith's list counts.
       const [pr] = await tx`select id from hopper.projects where lower(name) = lower(${p.name})`;
       if (!pr) { unknown.push(`project:${p.name}`); continue; }
-      await tx`insert into hopper.note_projects (note_id, project_id, confidence, confirmed)
-               values (${noteId}, ${pr.id}, ${conf(p.confidence)}, false) on conflict do nothing`;
+      if (existing.some((e: any) => e.project_id === pr.id)) {
+        await tx`update hopper.note_projects set confidence = 'high'
+                 where note_id = ${noteId} and project_id = ${pr.id} and confirmed = false and added_by = 'rule'`;
+        continue;
+      }
+      if (existing.length) continue;
+      const [rej] = await tx`select 1 from hopper.tag_rejections where note_id = ${noteId} and project_id = ${pr.id}`;
+      if (rej) continue;
+      await tx`insert into hopper.note_projects (note_id, project_id, confidence, confirmed, added_by)
+               values (${noteId}, ${pr.id}, ${conf(p.confidence)}, false, 'ai') on conflict do nothing`;
     }
     return { saved: true, locked: false, unknown };
   });
 }
 
-async function loadNotes(where: "files" | "next", arg: any, limit: number) {
-  // Locked notes are never selected, so they never reach the model.
+async function loadNotes(where: "files" | "ids" | "next", arg: any, limit: number) {
+  // Notes come through notes_for_ai, which holds unlocked notes only, so locked notes never reach the model.
   const notes = where === "files"
-    ? await sql`select n.id, n.keep_file, n.title, n.body, n.list_items, n.created_at, n.keep_labels
-                from hopper.notes n where n.keep_file = any(${arg}) and n.is_locked = false`
-    : await sql`select n.id, n.keep_file, n.title, n.body, n.list_items, n.created_at, n.keep_labels
-                from hopper.notes n where n.is_locked = false and n.tagged_at is null
+    ? await sql`select n.id, k.keep_file, n.title, n.body, n.why_saved, n.list_items, n.created_at, n.keep_labels
+                from hopper.notes_for_ai n join hopper.notes k on k.id = n.id where k.keep_file = any(${arg})`
+    : where === "ids"
+    ? await sql`select n.id, k.keep_file, n.title, n.body, n.why_saved, n.list_items, n.created_at, n.keep_labels
+                from hopper.notes_for_ai n join hopper.notes k on k.id = n.id where n.id = any(${arg}::uuid[]) limit ${limit}`
+    : await sql`select n.id, k.keep_file, n.title, n.body, n.why_saved, n.list_items, n.created_at, n.keep_labels
+                from hopper.notes_for_ai n join hopper.notes k on k.id = n.id
+                where n.tagged_at is null and coalesce(n.edited_at, n.created_at) < now() - interval '2 minutes'
                   and not exists (select 1 from hopper.batches b where b.status not in ('collected', 'canceled', 'expired') and n.id = any(b.note_ids))
                 order by n.created_at limit ${limit}`;
   const ids = notes.map((n: any) => n.id);
@@ -345,6 +367,9 @@ Deno.serve(async (req: Request) => {
     if (Array.isArray(body.keep_files)) {
       if (body.keep_files.length > 15) return new Response("send up to 15 keep_files", { status: 400 });
       loaded = await loadNotes("files", body.keep_files, 15);
+    } else if (Array.isArray(body.ids)) {
+      if (body.ids.length > 15) return new Response("send up to 15 ids", { status: 400 });
+      loaded = await loadNotes("ids", body.ids, 15);
     } else if (body.next) {
       loaded = await loadNotes("next", null, Math.min(Number(body.next), 15));
     } else return new Response("nothing to do", { status: 400 });
@@ -352,7 +377,7 @@ Deno.serve(async (req: Request) => {
     const results = await Promise.all(loaded.notes.map(async (n: any) => {
       const r: any = await tagOne(await buildParams(n, loaded.links, loaded.atts, model, system, opts), key);
       if (body.write === true && r.tags) r.write = await saveTags(n.id, r.tags, model);
-      return { keep_file: n.keep_file, ...r };
+      return { id: n.id, keep_file: n.keep_file, ...r };
     }));
     return json({ model, prompt_version: PROMPT_VERSION, tagged: results.length, results });
   } catch (e) {

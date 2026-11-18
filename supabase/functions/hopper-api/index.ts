@@ -251,7 +251,7 @@ Deno.serve(async (req: Request) => {
           union all select 'topic', t.name, nt.confidence, null, null, null from hopper.note_topics nt join hopper.topics t on t.id = nt.topic_id where nt.note_id = ${n.id}
           union all select 'person', p.name, np.confidence, np.confirmed, null, null from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = ${n.id}
           union all select 'work', w.title, nw.confidence, null, null, null from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = ${n.id}`;
-        const links = await sql`select url, page_title, thumbnail_url from hopper.note_links where note_id = ${n.id}`;
+        const links = await sql`select url, page_title, page_text, thumbnail_url from hopper.note_links where note_id = ${n.id}`;
         const atts = await sql`select storage_path, caption from hopper.attachments where note_id = ${n.id}`;
         const urls = await signed(atts.map((a: any) => a.storage_path));
         const related = await sql`
@@ -292,6 +292,8 @@ Deno.serve(async (req: Request) => {
           where id = ${b.id}
           returning id, edited_at, format, keep_color, pinned, archived`;
         if ((has("title") || has("body")) && n.source === "app") {
+          // Marked for a fresh Claude tagging pass; the sweep runs it once the note has been still for two minutes.
+          await sql`update hopper.notes set tagged_at = null where id = ${n.id} and not is_locked`;
           const [{ c }] = await sql`select count(*)::int as c from hopper.note_projects where note_id = ${n.id}`;
           try { await embedAndFile(n.id, c === 0); } catch (_) { /* best-effort */ }
         }
@@ -375,6 +377,8 @@ Deno.serve(async (req: Request) => {
         try { await linkify(n.id); } catch (_) { /* the note is saved either way */ }
         let filed: any[] = [];
         try { filed = await embedAndFile(n.id, true); } catch (_) { /* filing is best-effort; the note is saved either way */ }
+        // Claude tagging runs in the background once filing is done (HOP-5); it does nothing while auto_tag is off.
+        try { await sql`select hopper.tag_new(${n.id}::uuid)`; } catch (_) { /* the sweep picks it up */ }
         return json({ saved: n, filed });
       }
       case "relink": {
