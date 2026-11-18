@@ -308,6 +308,7 @@ async function openNote(id, push = true) {
   const body = $("d-body"); body.replaceChildren(el("p", { class: "muted" }, "Loading…"));
   setEditorChrome(null); $("d-meta").textContent = "";
   $("d-colours").hidden = true; $("d-menu").hidden = true;
+  $("d-sheet").style.transform = ""; $("d-sheet").style.transition = ""; $("detail").style.backgroundColor = "";
   $("detail").hidden = false; document.body.style.overflow = "hidden";
   try {
     const { note: n, related } = await api({ action: "note", id });
@@ -357,6 +358,51 @@ async function closeDetail() {
 }
 $("detail-close").addEventListener("click", () => history.state?.note ? history.back() : (closeDetail(), history.replaceState({}, "", "/")));
 $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("detail-close").click(); });
+
+// Pull down to dismiss (touch screens): with the note scrolled to the top, keep dragging down and the sheet
+// follows your finger; let go past a short distance, or flick, and it closes. Otherwise it springs back.
+(function pullToDismiss() {
+  const sheet = $("d-sheet"), body = $("d-body"), overlay = $("detail");
+  let y0 = null, dy = 0, t0 = 0, pulling = false;
+  const springBack = () => {
+    sheet.style.transition = "transform .2s ease-out";
+    sheet.style.transform = ""; overlay.style.backgroundColor = "";
+    setTimeout(() => (sheet.style.transition = ""), 220);
+  };
+  sheet.addEventListener("touchstart", (e) => {
+    y0 = null;
+    if (e.touches.length !== 1 || body.scrollTop > 0 || e.target.closest(".pop")) return;
+    y0 = e.touches[0].clientY; dy = 0; t0 = Date.now(); pulling = false;
+  }, { passive: true });
+  sheet.addEventListener("touchmove", (e) => {
+    if (y0 == null) return;
+    dy = e.touches[0].clientY - y0;
+    if (!pulling) {
+      if (dy < 0 || body.scrollTop > 0) { y0 = null; return; } // scrolling up into the note: leave it alone
+      if (dy < 10) return;
+      pulling = true; sheet.style.transition = "none";
+      if (document.activeElement?.blur) document.activeElement.blur(); // drop the keyboard while pulling
+    }
+    e.preventDefault();
+    const d = Math.max(0, dy - 10);
+    sheet.style.transform = `translateY(${d}px)`;
+    overlay.style.backgroundColor = `rgba(0,0,0,${(0.4 * Math.max(0, 1 - d / 450)).toFixed(3)})`;
+  }, { passive: false });
+  const end = () => {
+    if (y0 == null) return;
+    y0 = null;
+    if (!pulling) return;
+    pulling = false;
+    const flick = dy / Math.max(1, Date.now() - t0) > 0.6;
+    if (dy > 120 || (flick && dy > 40)) {
+      sheet.style.transition = "transform .18s ease-in";
+      sheet.style.transform = "translateY(100%)";
+      setTimeout(() => $("detail-close").click(), 170); // closing saves any pending edits
+    } else springBack();
+  };
+  sheet.addEventListener("touchend", end);
+  sheet.addEventListener("touchcancel", end);
+})();
 addEventListener("popstate", () => route());
 
 // Editor controls
