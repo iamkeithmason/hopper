@@ -112,7 +112,8 @@ main { padding: 6px 8px 40px; max-width: 1400px; margin: 0 auto; }
 .quiet.body.quote { font-family: Georgia, "Times New Roman", serif; font-size: 17px; }
 .quiet-input { border-bottom: 1px solid var(--line); margin: 6px 0 10px; font-size: 16px; }
 
-.detail { position: relative; display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.detail { position: relative; display: flex; flex-direction: column; padding: 0; overflow: hidden; will-change: transform; }
+.detail.pulling .d-body { overflow: hidden; }
 .editor-bar, .editor-foot { display: flex; align-items: center; gap: 2px; padding: 8px 10px; flex: none; }
 .editor-foot { border-top: 1px solid var(--line); padding-bottom: calc(env(safe-area-inset-bottom) + 8px); }
 .d-body { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 0 20px 24px; }

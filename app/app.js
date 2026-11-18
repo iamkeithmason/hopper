@@ -379,12 +379,16 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
     dy = e.touches[0].clientY - y0;
     if (!pulling) {
       if (dy < 0 || body.scrollTop > 0) { y0 = null; return; } // scrolling up into the note: leave it alone
-      if (dy < 10) return;
-      pulling = true; sheet.style.transition = "none";
+      // From the very first downward move, take the gesture away from the browser so the note
+      // never scrolls (or bounces) underneath while the sheet is moving.
+      if (dy < 3) return; // ignore a jitter, so an upward scroll that starts with one still scrolls
+      e.preventDefault();
+      if (dy < 6) return;
+      pulling = true; sheet.style.transition = "none"; sheet.classList.add("pulling");
       if (document.activeElement?.blur) document.activeElement.blur(); // drop the keyboard while pulling
     }
     e.preventDefault();
-    const d = Math.max(0, dy - 10);
+    const d = Math.max(0, dy - 6);
     sheet.style.transform = `translateY(${d}px)`;
     overlay.style.backgroundColor = `rgba(0,0,0,${(0.4 * Math.max(0, 1 - d / 450)).toFixed(3)})`;
   }, { passive: false });
@@ -392,7 +396,7 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
     if (y0 == null) return;
     y0 = null;
     if (!pulling) return;
-    pulling = false;
+    pulling = false; sheet.classList.remove("pulling");
     const flick = dy / Math.max(1, Date.now() - t0) > 0.6;
     if (dy > 120 || (flick && dy > 40)) {
       sheet.style.transition = "transform .18s ease-in";

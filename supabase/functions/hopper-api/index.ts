@@ -61,9 +61,27 @@ const URL_RE = /https?:\/\/[^\s<>"']+/i;
 const onlyUrl = (t: string | null) => (t && URL_RE.test(t) && t.replace(URL_RE, "").trim() === "" ? t.match(URL_RE)![0] : null);
 const decode = (t: string) => t.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
 
+// Video sites block plain page fetches from servers, so use their oEmbed endpoints instead.
+const YT = /^https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/)|youtu\.be\/)([\w-]{11})/i;
+const OEMBED: [RegExp, string, string][] = [
+  [YT, "youtube", "https://www.youtube.com/oembed?format=json&url="],
+  [/^https?:\/\/(?:www\.)?vimeo\.com\/(\d+)/i, "vimeo", "https://vimeo.com/api/oembed.json?url="],
+];
+
 async function pageMeta(url: string) {
-  const out: { url: string; title?: string; text?: string; image?: string; ok: boolean } = { url, ok: false };
+  const out: { url: string; title?: string; text?: string; image?: string; ok: boolean; kind?: string; provider?: string; media_id?: string } = { url, ok: false };
   try {
+    for (const [re, provider, endpoint] of OEMBED) {
+      const m = url.match(re);
+      if (!m) continue;
+      const canonical = provider === "youtube" ? `https://www.youtube.com/watch?v=${m[1]}` : url;
+      const r = await fetch(endpoint + encodeURIComponent(canonical), { signal: AbortSignal.timeout(6000) });
+      if (r.ok) {
+        const j = await r.json();
+        return { url, title: j.title, text: j.author_name ? `Video by ${j.author_name}` : undefined, image: j.thumbnail_url,
+                 ok: true, kind: "video", provider, media_id: m[1] };
+      }
+    }
     const wiki = url.match(/^https?:\/\/([a-z]+)\.(?:m\.)?wikipedia\.org\/wiki\/([^?#]+)/i);
     if (wiki) {
       const r = await fetch(`https://${wiki[1]}.wikipedia.org/api/rest_v1/page/summary/${wiki[2]}`, { signal: AbortSignal.timeout(6000) });
@@ -111,6 +129,8 @@ async function linkify(id: string) {
       page_title = coalesce(${m.title ?? null}::text, page_title),
       page_text = coalesce(${m.text ?? null}::text, page_text),
       thumbnail_url = coalesce(${m.image ?? null}::text, thumbnail_url),
+      kind = coalesce(${m.kind ?? null}::text, kind), provider = coalesce(${m.provider ?? null}::text, provider),
+      media_id = coalesce(${m.media_id ?? null}::text, media_id),
       fetched_at = now(), fetch_status = ${m.ok ? "ok" : "error"}
     where id = ${link.id}`;
   await sql`update hopper.notes set
