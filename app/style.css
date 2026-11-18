@@ -69,6 +69,7 @@ main { padding: 6px 8px 40px; max-width: 1400px; margin: 0 auto; }
 .capture { display: grid; gap: 8px; max-width: 520px; }
 .capture label { font-size: 13px; font-weight: 600; margin-top: 4px; }
 .preview { display: flex; gap: 10px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+.preview .p-imgs { display: flex; gap: 6px; flex-shrink: 0; } .preview .p-imgs img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; display: block; }
 .preview .p-text { min-width: 0; } .preview .p-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview .p-sub { font-size: 12.5px; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toggle { display: flex; align-items: center; gap: 8px; font-weight: 500 !important; margin: 6px 0; }

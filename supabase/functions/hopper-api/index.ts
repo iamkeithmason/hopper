@@ -162,8 +162,10 @@ async function embedAndFile(id: string, refile: boolean) {
   return await sql`select project, band from hopper.file_note(${id})`;
 }
 
-// Who can unlock a note in the app: Keith's own locks, and safety-check locks on his app captures.
-const canUnlock = (n: any) => n.lock_source === "user" || (n.source === "app" && ["classifier", "pattern"].includes(n.lock_source));
+// Who can unlock a note in the app: Keith's own locks, and safety-check locks on notes he captured
+// himself (in the app, or clipped to Notion before Hopper existed).
+const OWN_CAPTURES = ["app", "notion-clip"];
+const canUnlock = (n: any) => n.lock_source === "user" || (OWN_CAPTURES.includes(n.source) && ["classifier", "pattern"].includes(n.lock_source));
 
 // Card fields for lists. Locked notes are reduced to title, date and the lock.
 async function cards(rows: any[]) {
@@ -382,13 +384,25 @@ Deno.serve(async (req: Request) => {
         const text = (b.text ?? "").trim() || null;
         const url = (b.url ?? "").trim() || null;
         const why = (b.note ?? "").trim() || null;
-        if (!title && !text && !url && !why) return json({ error: "nothing to save" }, 400);
+        // HOP-7: up to four shared images, already shrunk to JPEG by the app.
+        const images = (Array.isArray(b.images) ? b.images : []).slice(0, 4)
+          .filter((im: any) => typeof im?.data === "string" && im.data.length < 4_000_000);
+        if (!title && !text && !url && !why && !images.length) return json({ error: "nothing to save" }, 400);
         const lock = Boolean(b.lock);
         const [n] = await sql`
-          insert into hopper.notes (source, title, body, why_saved, is_locked, lock_source, lock_reason)
-          values ('app', ${title}, ${text}, ${why}, ${lock}, ${lock ? "user" : null}, ${lock ? "Locked at capture" : null})
+          insert into hopper.notes (source, title, body, why_saved, is_locked, lock_source, lock_reason, format)
+          values ('app', ${title}, ${text}, ${why}, ${lock}, ${lock ? "user" : null}, ${lock ? "Locked at capture" : null},
+                  ${images.length && !url && !text ? "image" : null})
           returning id, created_at`;
         if (url) await sql`insert into hopper.note_links (note_id, url, page_title) values (${n.id}, ${url}, ${title})`;
+        for (const [i, im] of images.entries()) {
+          const path = `app/${n.id}/${i}.jpg`;
+          const bytes = Uint8Array.from(atob(im.data), (c) => c.charCodeAt(0));
+          const { error } = await storage.upload(path, bytes, { contentType: "image/jpeg", upsert: true });
+          if (error) continue;
+          await sql`insert into hopper.attachments (note_id, storage_path, mime, width, height)
+                    values (${n.id}, ${path}, 'image/jpeg', ${Number(im.width) || null}, ${Number(im.height) || null})`;
+        }
         try { await linkify(n.id); } catch (_) { /* the note is saved either way */ }
         let filed: any[] = [];
         try { filed = await embedAndFile(n.id, true); } catch (_) { /* filing is best-effort; the note is saved either way */ }
@@ -399,7 +413,7 @@ Deno.serve(async (req: Request) => {
       case "relink": {
         // Repair a note saved before links were recognised: linkify, re-embed and file if it has no projects.
         const [n] = await sql`select id, source from hopper.notes where id = ${b.id}`;
-        if (!n || n.source !== "app") return json({ error: "not available" }, 404);
+        if (!n || !OWN_CAPTURES.includes(n.source)) return json({ error: "not available" }, 404);
         await linkify(n.id);
         const [{ c }] = await sql`select count(*)::int as c from hopper.note_projects where note_id = ${n.id}`;
         const filed = await embedAndFile(n.id, c === 0);

@@ -68,7 +68,7 @@ async function boot() {
   if (!state.share) {
     try {
       const p = JSON.parse(localStorage.getItem(PENDING) || "null");
-      if (p && Date.now() - p.at < 86400000) state.share = { url: p.url || "", text: p.text || "", title: p.title || "" };
+      if (p && Date.now() - p.at < 86400000) state.share = { url: p.url || "", text: p.text || "", title: p.title || "", images: p.images || 0 };
     } catch {}
   }
   try { localStorage.removeItem(PENDING); } catch {}
@@ -78,7 +78,7 @@ async function boot() {
   try {
     await loadProjects();
     route();
-    if (state.share) openCapture(state.share);
+    if (state.share) { state.share.blobs = await sharedImages(state.share.images); openCapture(state.share); }
   } catch (e) { $("status").textContent = e.message; }
 }
 
@@ -529,13 +529,38 @@ function readShare() {
   let url = p.get("url") || "", text = p.get("text") || "", title = p.get("title") || "";
   // Android usually puts the link in "text"; pull it out.
   if (!url) { const m = text.match(/https?:\/\/\S+/); if (m) { url = m[0]; text = text.replace(m[0], "").trim(); } }
-  state.share = { url, text, title };
+  state.share = { url, text, title, images: Number(p.get("images") || 0) };
   history.replaceState({}, "", "/");
+}
+
+// HOP-7: images shared to Hopper wait in the service worker's "hopper-share" cache until saved or dismissed.
+async function sharedImages(n) {
+  const out = [];
+  if (!n || !("caches" in window)) return out;
+  try {
+    const cache = await caches.open("hopper-share");
+    for (let i = 0; i < n; i++) { const r = await cache.match(`/shared-image/${i}`); if (r) out.push(await r.blob()); }
+  } catch {}
+  return out;
+}
+async function clearSharedImages() { try { if ("caches" in window) await caches.delete("hopper-share"); } catch {} }
+
+// Shrink an image to at most 1600 px on its long side, as JPEG, and return it base64-encoded.
+async function shrink(blob) {
+  const bmp = await createImageBitmap(blob);
+  const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  c.getContext("2d").drawImage(bmp, 0, 0, w, h);
+  const out = await new Promise((res) => c.toBlob(res, "image/jpeg", 0.85));
+  const buf = new Uint8Array(await out.arrayBuffer());
+  let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  return { data: btoa(bin), mime: "image/jpeg", width: w, height: h };
 }
 
 function openCapture(s = null) {
   state.share = s;
-  const shared = !!(s && (s.url || s.text));
+  const shared = !!(s && (s.url || s.text || s.blobs?.length));
   $("c-title").value = s?.title || "";
   $("c-note").value = "";
   $("c-note").placeholder = shared ? "Add a note, or why you saved it" : "Note";
@@ -543,13 +568,17 @@ function openCapture(s = null) {
   const pv = $("c-preview");
   if (shared) {
     let host = ""; try { host = new URL(s.url).hostname.replace(/^www\./, ""); } catch {}
-    pv.replaceChildren(el("div", { class: "p-text" }, el("div", { class: "p-title" }, s.title || host || "Shared text"), el("div", { class: "p-sub" }, s.url || s.text)));
+    const thumbs = (s.blobs || []).map((b) => el("img", { src: URL.createObjectURL(b), alt: "" }));
+    pv.replaceChildren(...[
+      thumbs.length ? el("div", { class: "p-imgs" }, ...thumbs) : null,
+      (s.url || s.text || s.title) ? el("div", { class: "p-text" }, el("div", { class: "p-title" }, s.title || host || (thumbs.length ? "Shared image" : "Shared text")), el("div", { class: "p-sub" }, s.url || s.text)) : null,
+    ].filter(Boolean));
     pv.hidden = false;
   } else pv.hidden = true;
   $("capture").hidden = false;
   requestAnimationFrame(() => { autosize($("c-title")); autosize($("c-note")); $("c-note").focus(); });
 }
-function closeCapture() { $("capture").hidden = true; state.share = null; }
+function closeCapture() { if (state.share?.blobs?.length) clearSharedImages(); $("capture").hidden = true; state.share = null; }
 for (const id of ["c-title", "c-note"]) $(id).addEventListener("input", () => autosize($(id)));
 $("c-title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("c-note").focus(); } });
 $("new-btn").addEventListener("click", () => openCapture());
@@ -558,12 +587,16 @@ $("capture").addEventListener("click", (e) => { if (e.target.id === "capture") c
 $("capture-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const s = state.share;
-  const shared = !!(s && (s.url || s.text));
+  const shared = !!(s && (s.url || s.text || s.blobs?.length));
   const typed = $("c-note").value;
   const payload = { action: "capture", title: $("c-title").value, url: s?.url || "", lock: $("c-lock").checked,
     text: shared ? (s.text || "") : typed, note: shared ? typed : "" };
-  if (!payload.title.trim() && !payload.text.trim() && !payload.url && !payload.note.trim()) { toast("Nothing to save yet"); return; }
+  if (!payload.title.trim() && !payload.text.trim() && !payload.url && !payload.note.trim() && !s?.blobs?.length) { toast("Nothing to save yet"); return; }
   $("capture-save").disabled = true;
+  if (s?.blobs?.length) {
+    try { payload.images = await Promise.all(s.blobs.map(shrink)); }
+    catch { toast("Couldn't read the image"); $("capture-save").disabled = false; return; }
+  }
   try {
     const r = await api(payload); closeCapture();
     const filed = (r && r.filed) || [];
