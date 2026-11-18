@@ -54,15 +54,85 @@ async function signed(paths: string[]) {
   return out;
 }
 
+// A note that is only a link (pasted into a new note, or shared without its own text) becomes a bookmark:
+// the link is stored as a link, and its page's title, description and image are fetched so the note
+// can be shown, searched and filed. Best-effort: a page that won't load just leaves the bare link.
+const URL_RE = /https?:\/\/[^\s<>"']+/i;
+const onlyUrl = (t: string | null) => (t && URL_RE.test(t) && t.replace(URL_RE, "").trim() === "" ? t.match(URL_RE)![0] : null);
+const decode = (t: string) => t.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
+
+async function pageMeta(url: string) {
+  const out: { url: string; title?: string; text?: string; image?: string; ok: boolean } = { url, ok: false };
+  try {
+    const wiki = url.match(/^https?:\/\/([a-z]+)\.(?:m\.)?wikipedia\.org\/wiki\/([^?#]+)/i);
+    if (wiki) {
+      const r = await fetch(`https://${wiki[1]}.wikipedia.org/api/rest_v1/page/summary/${wiki[2]}`, { signal: AbortSignal.timeout(6000) });
+      if (r.ok) {
+        const j = await r.json();
+        return { url, title: j.title, text: j.extract, image: j.thumbnail?.source, ok: true };
+      }
+    }
+    const r = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(7000),
+      headers: { "user-agent": "Mozilla/5.0 (compatible; Hopper/1.0; personal notes app)", "accept-language": "en-GB,en;q=0.8" } });
+    out.url = r.url || url;
+    if (!r.ok) return out;
+    const html = (await r.text()).slice(0, 400000);
+    const meta = (k: string) => {
+      const m = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${k}["'][^>]*content=["']([^"']*)["']`, "i"))
+        ?? html.match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']${k}["']`, "i"));
+      return m ? decode(m[1]) : undefined;
+    };
+    const tag = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    out.title = meta("og:title") ?? meta("twitter:title") ?? (tag ? decode(tag[1]) : undefined);
+    out.text = meta("og:description") ?? meta("description") ?? meta("twitter:description");
+    if (!out.text) {
+      const para = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map((m) => decode(m[1].replace(/<[^>]+>/g, ""))).find((t) => t.length > 80);
+      if (para) out.text = para.slice(0, 600);
+    }
+    out.image = meta("og:image") ?? meta("twitter:image");
+    out.ok = Boolean(out.title || out.text);
+  } catch (_) { /* leave the bare link */ }
+  return out;
+}
+
+// Turn a bare-link note into a bookmark with its page details. Safe to run again on the same note.
+async function linkify(id: string) {
+  const [n] = await sql`select id, title, body, why_saved, summary, is_locked from hopper.notes where id = ${id}`;
+  if (!n || n.is_locked) return;
+  let [link] = await sql`select id, url, page_title from hopper.note_links where note_id = ${id} limit 1`;
+  const fromBody = onlyUrl(n.body), fromWhy = onlyUrl(n.why_saved);
+  const url = link?.url ?? fromBody ?? fromWhy ?? n.body?.match(URL_RE)?.[0] ?? n.why_saved?.match(URL_RE)?.[0];
+  if (!url) return;
+  if (!link) {
+    [link] = await sql`insert into hopper.note_links (note_id, url) values (${id}, ${url}) on conflict (note_id, url) do update set url = excluded.url returning id, url, page_title`;
+  }
+  const m = await pageMeta(url);
+  await sql`update hopper.note_links set
+      page_title = coalesce(${m.title ?? null}::text, page_title),
+      page_text = coalesce(${m.text ?? null}::text, page_text),
+      thumbnail_url = coalesce(${m.image ?? null}::text, thumbnail_url),
+      fetched_at = now(), fetch_status = ${m.ok ? "ok" : "error"}
+    where id = ${link.id}`;
+  await sql`update hopper.notes set
+      body = case when ${Boolean(fromBody)}::boolean then null else body end,
+      why_saved = case when ${Boolean(fromWhy)}::boolean then null else why_saved end,
+      title = coalesce(nullif(title, ''), ${m.title ?? null}::text),
+      summary = coalesce(summary, left(${m.text ?? null}::text, 220)),
+      format = case when ${Boolean(fromBody || fromWhy)}::boolean then coalesce(format, 'bookmark') else format end
+    where id = ${id}`;
+}
+
 // Embed an app-captured note with the same recipe as hopper-embed (title, why saved, link, body),
 // then file it into projects by closeness to their anchor notes. Locked notes are never embedded or filed.
 async function embedAndFile(id: string, refile: boolean) {
   const [n] = await sql`
     select n.id, n.title, n.body, n.why_saved, n.is_locked,
-      (select coalesce(l.page_title, l.url) from hopper.note_links l where l.note_id = n.id limit 1) as link
+      (select coalesce(l.page_title, l.url) from hopper.note_links l where l.note_id = n.id limit 1) as link,
+      (select l.page_text from hopper.note_links l where l.note_id = n.id and l.page_text is not null limit 1) as link_text
     from hopper.notes n where n.id = ${id}`;
   if (!n || n.is_locked) return [];
-  const text = [n.title, n.why_saved, n.link ? `Link: ${n.link}` : null, n.body ? String(n.body).slice(0, 1200) : null]
+  const text = [n.title, n.why_saved, n.link ? `Link: ${n.link}` : null, n.link_text ? String(n.link_text).slice(0, 800) : null,
+    n.body ? String(n.body).slice(0, 1200) : null]
     .filter(Boolean).join("\n").slice(0, 1800);
   if (!text.trim()) return [];
   const vec = await embed(text);
@@ -282,9 +352,19 @@ Deno.serve(async (req: Request) => {
           values ('app', ${title}, ${text}, ${why}, ${lock}, ${lock ? "user" : null}, ${lock ? "Locked at capture" : null})
           returning id, created_at`;
         if (url) await sql`insert into hopper.note_links (note_id, url, page_title) values (${n.id}, ${url}, ${title})`;
+        try { await linkify(n.id); } catch (_) { /* the note is saved either way */ }
         let filed: any[] = [];
         try { filed = await embedAndFile(n.id, true); } catch (_) { /* filing is best-effort; the note is saved either way */ }
         return json({ saved: n, filed });
+      }
+      case "relink": {
+        // Repair a note saved before links were recognised: linkify, re-embed and file if it has no projects.
+        const [n] = await sql`select id, source from hopper.notes where id = ${b.id}`;
+        if (!n || n.source !== "app") return json({ error: "not available" }, 404);
+        await linkify(n.id);
+        const [{ c }] = await sql`select count(*)::int as c from hopper.note_projects where note_id = ${n.id}`;
+        const filed = await embedAndFile(n.id, c === 0);
+        return json({ ok: true, filed });
       }
       default:
         return json({ error: "unknown action" }, 400);
