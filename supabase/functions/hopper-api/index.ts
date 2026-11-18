@@ -162,6 +162,9 @@ async function embedAndFile(id: string, refile: boolean) {
   return await sql`select project, band from hopper.file_note(${id})`;
 }
 
+// Who can unlock a note in the app: Keith's own locks, and safety-check locks on his app captures.
+const canUnlock = (n: any) => n.lock_source === "user" || (n.source === "app" && ["classifier", "pattern"].includes(n.lock_source));
+
 // Card fields for lists. Locked notes are reduced to title, date and the lock.
 async function cards(rows: any[]) {
   const urls = await signed(rows.filter((r) => !r.is_locked).map((r) => r.image_path));
@@ -243,7 +246,8 @@ Deno.serve(async (req: Request) => {
       case "note": {
         const [n] = await sql`select * from hopper.notes where id = ${b.id}`;
         if (!n) return json({ error: "not found" }, 404);
-        if (n.is_locked) return json({ note: { id: n.id, locked: true, title: n.title, created_at: n.created_at, user_locked: n.lock_source === "user" } });
+        if (n.is_locked) return json({ note: { id: n.id, locked: true, title: n.title, created_at: n.created_at, user_locked: n.lock_source === "user",
+          can_unlock: canUnlock(n), lock_reason: n.lock_source === "user" ? null : n.lock_reason } });
         const tags = await sql`
           select 'project' as kind, p.name, np.confidence, np.confirmed, np.added_by,
                  (select coalesce(nullif(r.title, ''), left(r.summary, 60)) from hopper.notes r where r.id = np.reason_note_id and not r.is_locked) as near
@@ -304,13 +308,24 @@ Deno.serve(async (req: Request) => {
       }
       case "lock": {
         const lock = Boolean(b.lock);
-        const [n] = await sql`select id, is_locked, lock_source from hopper.notes where id = ${b.id}`;
+        const [n] = await sql`select id, is_locked, lock_source, lock_reason, source from hopper.notes where id = ${b.id}`;
         if (!n) return json({ error: "not found" }, 404);
-        // Only notes Keith locked himself can be unlocked here; others wait for the master password.
-        if (!lock && n.lock_source !== "user") return json({ error: "This note was locked by the safety check. It opens with the master password, which comes later." }, 403);
+        // Keith can unlock his own locks, and safety-check locks on notes he captured in the app.
+        // Safety-check locks on imported Keep notes wait for the master password.
+        if (!lock && n.is_locked && !canUnlock(n)) return json({ error: "This note was locked by the safety check. It opens with the master password, which comes later." }, 403);
         await sql`update hopper.notes set is_locked = ${lock}::boolean, lock_source = ${lock ? "user" : null}::text,
                   lock_reason = ${lock ? "Locked by Keith" : null}::text, edited_at = now() where id = ${b.id}`;
         if (lock) await sql`delete from hopper.note_embeddings where note_id = ${b.id}`;
+        if (!lock && n.is_locked && n.lock_source !== "user") {
+          // Overruling the safety check: logged, never locked by it again, and tagged afresh.
+          await sql`insert into hopper.corrections (note_id, facet, action, old_value, new_value)
+                    values (${n.id}, 'lock', 'unlock', ${`${n.lock_source}: ${n.lock_reason ?? ""}`}::text, null)`;
+          await sql`update hopper.notes set tagged_at = null where id = ${n.id}`;
+        }
+        if (!lock && n.is_locked) {
+          const [{ c }] = await sql`select count(*)::int as c from hopper.note_projects where note_id = ${n.id}`;
+          try { await embedAndFile(n.id, c === 0); } catch (_) { /* best-effort */ }
+        }
         return json({ ok: true, locked: lock });
       }
       case "delete": {

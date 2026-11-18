@@ -35,10 +35,36 @@ end $$;
 revoke all on function hopper.tag_new(uuid) from public, anon, authenticated;
 revoke all on function hopper.tag_sweep() from public, anon, authenticated;
 
--- Pattern check on edits as well as inserts.
+-- Pattern check on edits as well as inserts. A note Keith has unlocked himself is not locked again.
+create or replace function hopper.pattern_lock_edit()
+returns trigger
+language plpgsql
+set search_path to ''
+as $$
+begin
+  if new.is_locked then return new; end if;
+  if exists (select 1 from hopper.corrections c where c.note_id = new.id and c.facet = 'lock' and c.action = 'unlock') then return new; end if;
+  return hopper.pattern_lock_row(new);
+end $$;
+
+-- The insert trigger's logic, callable from the edit trigger.
+create or replace function hopper.pattern_lock_row(r hopper.notes)
+returns hopper.notes
+language plpgsql
+set search_path to ''
+as $$
+declare reason text;
+begin
+  reason := hopper.pattern_check(r.title, r.body, r.list_items);
+  if reason is not null then
+    r.is_locked := true; r.lock_source := 'pattern'; r.lock_reason := reason;
+  end if;
+  return r;
+end $$;
+
 drop trigger if exists notes_pattern_lock_update on hopper.notes;
 create trigger notes_pattern_lock_update before update of title, body, list_items on hopper.notes
-  for each row execute function hopper.pattern_lock();
+  for each row execute function hopper.pattern_lock_edit();
 
 -- A note that becomes locked loses its embedding, whoever locked it.
 create or replace function hopper.drop_locked_embedding()

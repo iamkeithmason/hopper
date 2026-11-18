@@ -229,7 +229,7 @@ function setEditorChrome(n) {
   sheet.className = `sheet tall detail ${colourClass(n?.color)}`;
   const locked = !n || n.locked;
   for (const id of ["d-pin", "d-archive", "d-colour-btn", "d-format", "d-more"]) $(id).hidden = locked;
-  $("d-lock").hidden = !n || (n.locked && !n.user_locked);
+  $("d-lock").hidden = !n || (n.locked && !(n.can_unlock ?? n.user_locked));
   if (!n) return;
   $("d-pin").replaceChildren(icon(n.pinned ? "pinned" : "pin"));
   $("d-pin").classList.toggle("on", !!n.pinned);
@@ -351,7 +351,9 @@ async function openNote(id, push = true) {
     if (n.locked) {
       body.replaceChildren(...[
         el("h1", {}, "🔒 ", n.title || "Locked note"),
-        el("p", { class: "muted" }, n.user_locked ? "You locked this note. Tap the lock above to unlock it." : "The safety check locked this note. It opens with your master password, which comes in a later build."),
+        el("p", { class: "muted" }, n.user_locked ? "You locked this note. Tap the lock below to unlock it."
+          : n.can_unlock ? `The safety check locked this note${n.lock_reason ? ` (${n.lock_reason})` : ""}. If that's wrong, tap the lock below to unlock it.`
+          : "The safety check locked this note. It opens with your master password, which comes in a later build."),
       ]);
       return;
     }
@@ -456,6 +458,7 @@ $("d-archive").addEventListener("click", async () => {
 $("d-lock").addEventListener("click", async () => {
   const n = state.note; if (!n) return;
   if (!n.locked && !confirm("Lock this note? Its content will be hidden, and the AI won't see it, until you unlock it.")) return;
+  if (n.locked && !n.user_locked && !confirm("Unlock this note? The AI will see it again, and the safety check won't lock it a second time.")) return;
   try {
     await flushSave();
     await api({ action: "lock", id: n.id, lock: !n.locked });

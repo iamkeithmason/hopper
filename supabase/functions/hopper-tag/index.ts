@@ -178,7 +178,9 @@ async function saveTags(noteId: string, t: any, model: string) {
     // Only the model's own unconfirmed project guesses are replaced; tags filed by closeness or added by Keith stay.
     await tx`delete from hopper.note_projects where note_id = ${noteId} and confirmed = false and added_by = 'ai'`;
 
-    if (t.sensitive) {
+    // Keith has overruled the safety check on this note before: never lock it again.
+    const [overruled] = await tx`select 1 from hopper.corrections where note_id = ${noteId} and facet = 'lock' and action = 'unlock' limit 1`;
+    if (t.sensitive && !overruled) {
       // Lock first and keep nothing else the model said about the note.
       await tx`update hopper.notes set is_locked = true, lock_source = 'classifier',
                  lock_reason = ${String(t.sensitive_reason ?? "classifier").slice(0, 300)},
