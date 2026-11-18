@@ -51,8 +51,11 @@ main { padding: 6px 8px 40px; max-width: 1400px; margin: 0 auto; }
 .card .c-title { font-weight: 600; font-size: 14px; margin: 0 0 3px; }
 .card .c-excerpt { font-size: 13.5px; color: var(--mid); display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; }
 .card.quote .c-excerpt { font-family: Georgia, "Times New Roman", serif; font-size: 14.5px; color: var(--ink); }
-.card .c-foot { font-size: 11.5px; color: var(--soft); margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
-.card .badge { text-transform: uppercase; letter-spacing: .05em; }
+.card .c-media { position: relative; }
+.card .c-text.one { padding: 7px 12px 8px; }
+.card .c-line { margin: 0; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .badge { text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+.card .hover .h-type { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11.5px; opacity: .9; }
 .card.locked { background: var(--chip); padding: 14px 12px; text-align: center; color: var(--mid); }
 .card .hover { position: absolute; inset: 0; background: rgba(20,19,17,.72); color: #fff; padding: 12px; font-size: 12px; opacity: 0; transition: opacity .15s; display: flex; flex-direction: column; justify-content: flex-end; gap: 4px; }
 @media (hover: hover) { .card:hover .hover { opacity: 1; } }

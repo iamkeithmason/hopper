@@ -142,14 +142,24 @@ $("view-exit").addEventListener("click", () => { setArchived(false); renderPills
 function card(n) {
   if (n.locked) return el("div", { class: "card locked", "data-id": n.id, onclick: () => openNote(n.id) }, "🔒 ", fmtDate(n.created_at), n.title ? el("div", {}, n.title) : null);
   const projects = (n.projects || []).join(" · ");
+  // Image cards lead with the picture and one line: the title, or else the note's first line.
+  const line = n.title || (n.excerpt || "").split("\n").find((s) => s.trim()) || "";
+  const text = n.image
+    ? (line ? el("div", { class: "c-text one" }, el("p", { class: "c-line" }, line)) : null)
+    : ((n.title || n.excerpt) ? el("div", { class: "c-text" },
+        n.title ? el("p", { class: "c-title" }, n.title) : null,
+        n.excerpt ? el("div", { class: "c-excerpt" }, n.excerpt) : null) : null);
+  // Type, site, projects and date live in the hover overlay (desktop only), to fit more on the board.
+  // On image cards it covers just the picture, so the caption stays readable.
+  const hover = el("div", { class: "hover" },
+    (n.format || n.host) ? el("div", { class: "h-type" }, n.format ? el("span", { class: "badge" }, n.format) : null, n.host ? el("span", {}, n.host) : null) : null,
+    projects ? el("b", {}, projects) : null,
+    el("span", {}, fmtDate(n.created_at)));
+  const media = n.image ? el("div", { class: "c-media" },
+    el("img", { src: n.image, loading: "lazy", alt: "", onerror: (e) => e.target.parentNode.replaceWith(hover) }), hover) : null;
   return el("div", { class: `card ${n.format || ""} ${colourClass(n.color)}`, "data-id": n.id, onclick: () => openNote(n.id) },
     n.pinned ? (() => { const s = icon("pinned"); s.classList.add("pin-mark"); return s; })() : null,
-    n.image ? el("img", { src: n.image, loading: "lazy", alt: "", onerror: (e) => e.target.remove() }) : null,
-    (n.title || n.excerpt) ? el("div", { class: "c-text" },
-      n.title ? el("p", { class: "c-title" }, n.title) : null,
-      n.excerpt ? el("div", { class: "c-excerpt" }, n.excerpt) : null,
-      el("div", { class: "c-foot" }, n.format ? el("span", { class: "badge" }, n.format) : null, n.host ? el("span", {}, n.host) : null)) : null,
-    el("div", { class: "hover" }, projects ? el("b", {}, projects) : null, el("span", {}, fmtDate(n.created_at)), n.host ? el("span", {}, n.host) : null));
+    media, text, media ? null : hover);
 }
 
 // ---------- masonry ----------
