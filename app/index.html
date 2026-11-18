@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c1b19">
+<meta name="robots" content="noindex, nofollow">
+<title>Hopper</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20z"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M16 4v5l2 3v2h-5v6l-1 1-1-1v-6H6v-2l2-3V4H7V2h10v2zm-6 0v5.6L8.4 12h7.2L14 9.6V4z"/></symbol>
+  <symbol id="i-pinned" viewBox="0 0 24 24"><path d="M17 4V2H7v2h1v5l-2 3v2h5v6l1 1 1-1v-6h5v-2l-2-3V4z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><path d="M18 8h-1V6A5 5 0 0 0 7 6v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zM9 6a3 3 0 0 1 6 0v2H9zm9 14H6V10h12zm-6-3a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 24 24"><path d="M20.5 5.2 19.1 3.5A1.5 1.5 0 0 0 18 3H6a1.5 1.5 0 0 0-1.2.5L3.5 5.2A2 2 0 0 0 3 6.5V19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6.5a2 2 0 0 0-.5-1.3zM6.2 5h11.6l.8 1H5.4zM5 19V8h14v11zm8.5-9h-3v3H8l4 4 4-4h-2.5z"/></symbol>
+  <symbol id="i-unarchive" viewBox="0 0 24 24"><path d="M20.5 5.2 19.1 3.5A1.5 1.5 0 0 0 18 3H6a1.5 1.5 0 0 0-1.2.5L3.5 5.2A2 2 0 0 0 3 6.5V19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6.5a2 2 0 0 0-.5-1.3zM6.2 5h11.6l.8 1H5.4zM5 19V8h14v11zm3-6h2.5v3h3v-3H16l-4-4z"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 2a10 10 0 0 0 0 20 2.5 2.5 0 0 0 1.9-4.1.5.5 0 0 1 .4-.9H16a6 6 0 0 0 6-6c0-5-4.5-9-10-9zm4 13h-1.7a2.5 2.5 0 0 0-1.9 4.1.5.5 0 0 1-.4.9 8 8 0 1 1 0-16c4.4 0 8 3.1 8 7a4 4 0 0 1-4 4zM6.5 12a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm3-4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm5 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm3 4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><path d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></symbol>
+</svg>
+
+<!-- Sign in -->
+<section id="signin" class="screen" hidden>
+  <div class="signin-box">
+    <img src="/icon-192.png" alt="" width="56" height="56">
+    <h1>Hopper</h1>
+    <form id="signin-form">
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="email" required placeholder="you@example.com">
+      <button type="submit" class="primary">Send sign-in link</button>
+    </form>
+    <p id="signin-msg" class="muted"></p>
+  </div>
+</section>
+
+<!-- Home -->
+<section id="home" class="screen" hidden>
+  <header id="top">
+    <div class="bar">
+      <form id="search-form" role="search">
+        <input id="q" type="search" placeholder="Search by meaning…" autocomplete="off" enterkeyhint="search">
+      </form>
+      <button id="new-btn" class="icon-btn" aria-label="New note"><svg><use href="#i-plus"/></svg></button>
+      <button id="menu-btn" class="icon-btn" aria-label="Menu"><svg><use href="#i-more"/></svg></button>
+    </div>
+    <nav id="pills" class="pills" aria-label="Projects"></nav>
+    <nav id="subpills" class="pills sub" aria-label="Topics" hidden></nav>
+  </header>
+  <main>
+    <div id="view-banner" class="view-banner" hidden><span id="view-title"></span><button id="view-exit">Back to notes</button></div>
+    <p id="status" class="muted center"></p>
+    <div id="pinned-wrap" hidden><h4 class="section-label">Pinned</h4><div id="pinned" class="feed"></div><h4 class="section-label">Others</h4></div>
+    <div id="feed" class="feed"></div>
+    <div id="more" class="center muted"></div>
+  </main>
+  <div id="menu" class="menu" hidden>
+    <button id="all-projects-btn">All projects</button>
+    <button id="archived-btn">Archived</button>
+    <button id="signout-btn">Sign out</button>
+  </div>
+</section>
+
+<!-- All projects -->
+<section id="projects-sheet" class="overlay" hidden>
+  <div class="sheet tall">
+    <div class="sheet-head"><h2>All projects</h2><button class="icon-btn close" data-close="projects-sheet" aria-label="Close">✕</button></div>
+    <div id="projects-grid" class="projects-grid"></div>
+  </div>
+</section>
+
+<!-- Note editor -->
+<section id="detail" class="overlay" hidden>
+  <article id="d-sheet" class="sheet tall detail">
+    <div class="editor-bar">
+      <button class="icon-btn" id="detail-close" aria-label="Back"><svg><use href="#i-back"/></svg></button>
+      <span class="spacer"></span>
+      <button class="icon-btn" id="d-pin" aria-label="Pin"><svg><use href="#i-pin"/></svg></button>
+      <button class="icon-btn" id="d-lock" aria-label="Lock"><svg><use href="#i-lock"/></svg></button>
+      <button class="icon-btn" id="d-archive" aria-label="Archive"><svg><use href="#i-archive"/></svg></button>
+    </div>
+    <div id="d-body" class="d-body"></div>
+    <div class="editor-foot">
+      <button class="icon-btn" id="d-colour-btn" aria-label="Colour"><svg><use href="#i-palette"/></svg></button>
+      <select id="d-format" aria-label="Format"></select>
+      <span class="spacer muted small" id="d-meta"></span>
+      <button class="icon-btn" id="d-more" aria-label="More"><svg><use href="#i-more"/></svg></button>
+    </div>
+    <div id="d-colours" class="pop colours" hidden></div>
+    <div id="d-menu" class="pop menu-pop" hidden>
+      <button id="d-open-link">Open original link</button>
+      <button id="d-copy-link">Copy link to this note</button>
+      <button id="d-delete" class="danger">Delete note</button>
+    </div>
+  </article>
+</section>
+
+<!-- Tag picker -->
+<section id="tag-sheet" class="overlay" hidden>
+  <div class="sheet tall">
+    <div class="sheet-head"><h2>Add a tag</h2><button class="icon-btn close" data-close="tag-sheet" aria-label="Close">✕</button></div>
+    <input id="tag-filter" class="quiet-input" type="search" placeholder="Filter projects and topics…" autocomplete="off">
+    <div id="tag-list" class="tag-list"></div>
+  </div>
+</section>
+
+<!-- Capture -->
+<section id="capture" class="overlay" hidden>
+  <form id="capture-form" class="sheet capture">
+    <div id="c-preview" class="preview" hidden></div>
+    <textarea id="c-title" class="quiet title" rows="1" placeholder="Title" autocomplete="off"></textarea>
+    <textarea id="c-note" class="quiet body" rows="3" placeholder="Note"></textarea>
+    <div class="actions">
+      <label class="lock-toggle"><input id="c-lock" type="checkbox"><svg><use href="#i-lock"/></svg><span>Lock</span></label>
+      <span class="spacer"></span>
+      <button type="button" id="capture-cancel">Cancel</button>
+      <button type="submit" class="primary" id="capture-save">Save</button>
+    </div>
+  </form>
+</section>
+
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>
