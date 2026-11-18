@@ -330,6 +330,11 @@ async function openNote(id, push = true) {
     const hasList = Array.isArray(n.list_items) && n.list_items.length;
     body.replaceChildren(...[
       n.images?.length ? el("div", { class: "d-images" }, n.images.filter((i) => i.url).map((i) => el("img", { src: i.url, alt: i.caption || "" }))) : null,
+      // No stored image: show the linked page's own picture, as on the card. Tapping it opens the page.
+      !n.images?.length && n.links?.[0]?.thumbnail_url
+        ? el("a", { class: "d-images", href: n.links[0].url, target: "_blank", rel: "noopener noreferrer" },
+            el("img", { src: n.links[0].thumbnail_url, alt: n.links[0].page_title || "", referrerpolicy: "no-referrer" }))
+        : null,
       title,
       n.why_saved ? el("p", { class: "why-line" }, n.why_saved) : null,
       hasList ? el("ul", { class: "list-items" }, n.list_items.map((i) => el("li", {}, i.checked ? "☑ " : "☐ ", i.text))) : null,

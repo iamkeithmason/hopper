@@ -79,6 +79,7 @@ main { padding: 6px 8px 40px; max-width: 1400px; margin: 0 auto; }
 /* detail */
 .detail h1 { font-size: 22px; margin: 6px 0 10px; }
 .detail .d-images img { width: 100%; border-radius: 12px; margin-bottom: 8px; }
+.detail a.d-images { display: block; }
 .detail .d-text { white-space: pre-wrap; font-size: 16px; line-height: 1.6; }
 .detail .d-text.quote { font-family: Georgia, "Times New Roman", serif; font-size: 17px; }
 .detail .why { border-left: 3px solid var(--accent); padding: 4px 12px; margin: 12px 0; color: var(--mid); }
