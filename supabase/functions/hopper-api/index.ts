@@ -54,6 +54,24 @@ async function signed(paths: string[]) {
   return out;
 }
 
+// Embed an app-captured note with the same recipe as hopper-embed (title, why saved, link, body),
+// then file it into projects by closeness to their anchor notes. Locked notes are never embedded or filed.
+async function embedAndFile(id: string, refile: boolean) {
+  const [n] = await sql`
+    select n.id, n.title, n.body, n.why_saved, n.is_locked,
+      (select coalesce(l.page_title, l.url) from hopper.note_links l where l.note_id = n.id limit 1) as link
+    from hopper.notes n where n.id = ${id}`;
+  if (!n || n.is_locked) return [];
+  const text = [n.title, n.why_saved, n.link ? `Link: ${n.link}` : null, n.body ? String(n.body).slice(0, 1200) : null]
+    .filter(Boolean).join("\n").slice(0, 1800);
+  if (!text.trim()) return [];
+  const vec = await embed(text);
+  await sql`insert into hopper.note_embeddings (note_id, embedding, model) values (${id}, ${vec}::extensions.vector, 'gte-small')
+            on conflict (note_id) do update set embedding = excluded.embedding, created_at = now()`;
+  if (!refile) return [];
+  return await sql`select project, band from hopper.file_note(${id})`;
+}
+
 // Card fields for lists. Locked notes are reduced to title, date and the lock.
 async function cards(rows: any[]) {
   const urls = await signed(rows.filter((r) => !r.is_locked).map((r) => r.image_path));
@@ -137,10 +155,12 @@ Deno.serve(async (req: Request) => {
         if (!n) return json({ error: "not found" }, 404);
         if (n.is_locked) return json({ note: { id: n.id, locked: true, title: n.title, created_at: n.created_at, user_locked: n.lock_source === "user" } });
         const tags = await sql`
-          select 'project' as kind, p.name, np.confidence, np.confirmed from hopper.note_projects np join hopper.projects p on p.id = np.project_id where np.note_id = ${n.id}
-          union all select 'topic', t.name, nt.confidence, null from hopper.note_topics nt join hopper.topics t on t.id = nt.topic_id where nt.note_id = ${n.id}
-          union all select 'person', p.name, np.confidence, np.confirmed from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = ${n.id}
-          union all select 'work', w.title, nw.confidence, null from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = ${n.id}`;
+          select 'project' as kind, p.name, np.confidence, np.confirmed, np.added_by,
+                 (select coalesce(nullif(r.title, ''), left(r.summary, 60)) from hopper.notes r where r.id = np.reason_note_id and not r.is_locked) as near
+            from hopper.note_projects np join hopper.projects p on p.id = np.project_id where np.note_id = ${n.id}
+          union all select 'topic', t.name, nt.confidence, null, null, null from hopper.note_topics nt join hopper.topics t on t.id = nt.topic_id where nt.note_id = ${n.id}
+          union all select 'person', p.name, np.confidence, np.confirmed, null, null from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = ${n.id}
+          union all select 'work', w.title, nw.confidence, null, null, null from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = ${n.id}`;
         const links = await sql`select url, page_title, thumbnail_url from hopper.note_links where note_id = ${n.id}`;
         const atts = await sql`select storage_path, caption from hopper.attachments where note_id = ${n.id}`;
         const urls = await signed(atts.map((a: any) => a.storage_path));
@@ -162,7 +182,7 @@ Deno.serve(async (req: Request) => {
       }
       case "update": {
         // Title, body, format, colour, pin and archive. Locked notes can't be edited here.
-        const [n] = await sql`select id, is_locked, format from hopper.notes where id = ${b.id}`;
+        const [n] = await sql`select id, is_locked, format, source from hopper.notes where id = ${b.id}`;
         if (!n) return json({ error: "not found" }, 404);
         if (n.is_locked) return json({ error: "locked" }, 403);
         const has = (k: string) => Object.prototype.hasOwnProperty.call(b, k);
@@ -181,6 +201,10 @@ Deno.serve(async (req: Request) => {
             edited_at = now()
           where id = ${b.id}
           returning id, edited_at, format, keep_color, pinned, archived`;
+        if ((has("title") || has("body")) && n.source === "app") {
+          const [{ c }] = await sql`select count(*)::int as c from hopper.note_projects where note_id = ${n.id}`;
+          try { await embedAndFile(n.id, c === 0); } catch (_) { /* best-effort */ }
+        }
         if (has("format") && b.format !== n.format) {
           await sql`insert into hopper.corrections (note_id, facet, action, old_value, new_value) values (${n.id}, 'format', 'change', ${n.format}::text, ${b.format ?? null}::text)`;
         }
@@ -227,15 +251,20 @@ Deno.serve(async (req: Request) => {
         if (op === "add") {
           if (!ref) return json({ error: `No ${kind} called ${name}` }, 400);
           if (kind === "topic") await sql`insert into hopper.note_topics (note_id, topic_id, confidence) values (${n.id}, ${ref.id}, 'high') on conflict do nothing`;
-          else if (kind === "project") await sql`insert into hopper.note_projects (note_id, project_id, confidence, confirmed) values (${n.id}, ${ref.id}, 'high', true) on conflict do nothing`;
+          else if (kind === "project") {
+            await sql`insert into hopper.note_projects (note_id, project_id, confidence, confirmed, added_by) values (${n.id}, ${ref.id}, 'high', true, 'keith')
+                      on conflict (note_id, project_id) do update set confirmed = true, confidence = 'high'`;
+            await sql`delete from hopper.tag_rejections where note_id = ${n.id} and project_id = ${ref.id}`;
+          }
           else return json({ error: "add people and works later" }, 400);
         } else if (op === "remove") {
           if (!ref) return json({ error: "not found" }, 404);
           await sql`delete from ${sql("hopper." + t.link)} where note_id = ${n.id} and ${sql(t.ref)} = ${ref.id}`;
+          if (kind === "project") await sql`insert into hopper.tag_rejections (note_id, project_id) values (${n.id}, ${ref.id}) on conflict do nothing`;
         } else if (op === "confirm") {
           if (!ref) return json({ error: "not found" }, 404);
           if (kind === "topic" || kind === "work") await sql`update ${sql("hopper." + t.link)} set confidence = 'high' where note_id = ${n.id} and ${sql(t.ref)} = ${ref.id}`;
-          else await sql`update ${sql("hopper." + t.link)} set confirmed = true where note_id = ${n.id} and ${sql(t.ref)} = ${ref.id}`;
+          else await sql`update ${sql("hopper." + t.link)} set confirmed = true, confidence = 'high' where note_id = ${n.id} and ${sql(t.ref)} = ${ref.id}`;
         } else return json({ error: "bad op" }, 400);
         await sql`insert into hopper.corrections (note_id, facet, action, old_value, new_value)
                   values (${n.id}, ${kind}, ${op}, ${op === "add" ? null : name}::text, ${op === "remove" ? null : name}::text)`;
@@ -253,7 +282,9 @@ Deno.serve(async (req: Request) => {
           values ('app', ${title}, ${text}, ${why}, ${lock}, ${lock ? "user" : null}, ${lock ? "Locked at capture" : null})
           returning id, created_at`;
         if (url) await sql`insert into hopper.note_links (note_id, url, page_title) values (${n.id}, ${url}, ${title})`;
-        return json({ saved: n });
+        let filed: any[] = [];
+        try { filed = await embedAndFile(n.id, true); } catch (_) { /* filing is best-effort; the note is saved either way */ }
+        return json({ saved: n, filed });
       }
       default:
         return json({ error: "unknown action" }, 400);

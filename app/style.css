@@ -132,6 +132,8 @@ main { padding: 6px 8px 40px; max-width: 1400px; margin: 0 auto; }
 .chip.open .x, .chip.open .ok { display: inline-block; }
 .chip .ok { background: var(--ink); color: var(--bg); }
 .chip .x { background: var(--soft); color: var(--bg); }
+.chip .near { display: none; color: var(--soft); font-size: 11px; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.open .near { display: inline; }
 .chip.add { background: none; border: 1.5px dashed var(--faint); color: var(--soft); }
 .why-line { color: var(--mid); font-style: italic; margin: 4px 0 8px; }
 .list-items { list-style: none; padding: 0; margin: 6px 0; } .list-items li { padding: 3px 0; }

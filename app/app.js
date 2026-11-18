@@ -247,9 +247,13 @@ function chipsFor(n) {
   const wrap = el("div", { class: "chips" });
   for (const t of n.tags || []) {
     const unsure = t.confidence === "low" && !t.confirmed;
-    const chip = el("span", { class: `chip ${unsure ? "unsure" : ""}`, title: unsure ? "The AI isn't sure about this one" : "" },
+    // Project tags filed by closeness can be confirmed too; confirming makes the note an anchor for that project.
+    const confirmable = unsure || (t.kind === "project" && t.added_by === "rule" && !t.confirmed);
+    const why = t.near ? `Filed near “${t.near}”` : unsure ? "The AI isn't sure about this one" : "";
+    const chip = el("span", { class: `chip ${unsure ? "unsure" : ""}`, title: why },
       el("span", { class: "k" }, t.kind), t.name, unsure ? "?" : "",
-      unsure ? el("span", { class: "ok", title: "Confirm", onclick: (e) => { e.stopPropagation(); tagOp(t, "confirm"); } }, "✓") : null,
+      t.near ? el("span", { class: "near" }, `near ${t.near}`) : null,
+      confirmable ? el("span", { class: "ok", title: "Confirm", onclick: (e) => { e.stopPropagation(); tagOp(t, "confirm"); } }, "✓") : null,
       el("span", { class: "x", title: "Remove", onclick: (e) => { e.stopPropagation(); tagOp(t, "remove"); } }, "✕"));
     chip.addEventListener("click", () => { const open = chip.classList.contains("open"); wrap.querySelectorAll(".chip.open").forEach((c) => c.classList.remove("open")); chip.classList.toggle("open", !open); });
     wrap.append(chip);
@@ -459,7 +463,14 @@ $("capture-form").addEventListener("submit", async (e) => {
     text: shared ? (s.text || "") : typed, note: shared ? typed : "" };
   if (!payload.title.trim() && !payload.text.trim() && !payload.url && !payload.note.trim()) { toast("Nothing to save yet"); return; }
   $("capture-save").disabled = true;
-  try { await api(payload); closeCapture(); toast("Saved to Hopper"); if (!state.q && !state.archived) resetFeed(); }
+  try {
+    const r = await api(payload); closeCapture();
+    const filed = (r && r.filed) || [];
+    const firm = filed.filter((f) => f.band === "In").map((f) => f.project);
+    const maybe = filed.filter((f) => f.band === "Nearby").map((f) => f.project);
+    toast(firm.length ? `Saved, filed in ${firm.join(" and ")}` : maybe.length ? `Saved, maybe ${maybe[0]}` : "Saved to Hopper");
+    if (!state.q && !state.archived) resetFeed();
+  }
   catch (err) { toast(err.message); }
   $("capture-save").disabled = false;
 });
