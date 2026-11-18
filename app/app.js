@@ -302,6 +302,40 @@ async function addTag(kind, name) {
   } catch (e) { toast(e.message); }
 }
 
+// What Hopper fetched from a note's link, set apart from Keith's own note:
+// a player for YouTube and Vimeo, otherwise the page's picture; then its title, site and description.
+const VIDEO = [
+  [/^https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/)|youtu\.be\/)([\w-]{11})/i, (id) => `https://www.youtube-nocookie.com/embed/${id}`],
+  [/^https?:\/\/(?:www\.)?vimeo\.com\/(\d+)/i, (id) => `https://player.vimeo.com/video/${id}`],
+];
+function fromPage(n) {
+  const l = n.links?.[0];
+  if (!l) return null;
+  const host = l.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
+  let media = null;
+  for (const [re, src] of VIDEO) {
+    const m = l.url.match(re);
+    if (m) {
+      media = el("div", { class: "embed" }, el("iframe", { src: src(m[1]), title: l.page_title || "Video", loading: "lazy",
+        allow: "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share",
+        allowfullscreen: true, referrerpolicy: "strict-origin-when-cross-origin" }));
+      break;
+    }
+  }
+  if (!media && l.thumbnail_url && !n.images?.length) {
+    media = el("a", { href: l.url, target: "_blank", rel: "noopener noreferrer" },
+      el("img", { src: l.thumbnail_url, alt: l.page_title || "", referrerpolicy: "no-referrer" }));
+  }
+  const desc = l.page_text || (!n.body && n.format === "bookmark" ? n.summary : null);
+  return el("section", { class: "from-page" },
+    el("div", { class: "divider" }, "From the page"),
+    media,
+    el("a", { class: "p-link", href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.page_title || l.url, " ↗"),
+    el("span", { class: "p-host" }, host),
+    desc ? el("p", { class: "p-desc" }, String(desc).slice(0, 600)) : null,
+    ...n.links.slice(1).map((x) => el("a", { class: "p-link", href: x.url, target: "_blank", rel: "noopener noreferrer" }, x.page_title || x.url, " ↗")));
+}
+
 async function openNote(id, push = true) {
   if (push) history.pushState({ note: id }, "", `/n/${id}`);
   state.note = null; pending = {};
@@ -331,18 +365,12 @@ async function openNote(id, push = true) {
     const hasList = Array.isArray(n.list_items) && n.list_items.length;
     body.replaceChildren(...[
       n.images?.length ? el("div", { class: "d-images" }, n.images.filter((i) => i.url).map((i) => el("img", { src: i.url, alt: i.caption || "" }))) : null,
-      // No stored image: show the linked page's own picture, as on the card. Tapping it opens the page.
-      !n.images?.length && n.links?.[0]?.thumbnail_url
-        ? el("a", { class: "d-images", href: n.links[0].url, target: "_blank", rel: "noopener noreferrer" },
-            el("img", { src: n.links[0].thumbnail_url, alt: n.links[0].page_title || "", referrerpolicy: "no-referrer" }))
-        : null,
       title,
+      Object.assign(chipsFor(n), { id: "d-chips" }),
       n.why_saved ? el("p", { class: "why-line" }, n.why_saved) : null,
       hasList ? el("ul", { class: "list-items" }, n.list_items.map((i) => el("li", {}, i.checked ? "☑ " : "☐ ", i.text))) : null,
       (!hasList || n.body) ? bodyBox : null,
-      !n.body && n.summary && n.format === "bookmark" ? el("p", { class: "muted" }, n.summary) : null,
-      n.links?.length ? el("p", { class: "links" }, n.links.map((l) => el("a", { href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.page_title || l.url))) : null,
-      Object.assign(chipsFor(n), { id: "d-chips" }),
+      fromPage(n),
       related?.length ? el("h3", {}, "Related in your Hopper") : null,
       related?.length ? el("div", { class: "related" }, related.map(card)) : null,
     ].filter(Boolean));

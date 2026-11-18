@@ -119,11 +119,11 @@ main { padding: 6px 8px 40px; max-width: 1400px; margin: 0 auto; }
 .d-body { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 0 20px 24px; }
 #d-format { width: auto; border: 0; background: transparent; color: var(--mid); font-size: 14px; padding: 6px 4px; }
 .pop { position: absolute; bottom: calc(env(safe-area-inset-bottom) + 62px); background: var(--card); border-radius: 14px; box-shadow: 0 8px 28px rgba(0,0,0,.25); z-index: 5; }
-.colours { left: 12px; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; max-width: 290px; }
+.colours { right: 12px; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; max-width: 290px; }
 .swatch { width: 34px; height: 34px; border-radius: 17px; border: 2px solid transparent; }
 .swatch.on { border-color: var(--ink); }
 .swatch.none { background: var(--bg); border: 2px solid var(--line); font-size: 15px; color: var(--soft); }
-.menu-pop { right: 12px; display: grid; min-width: 210px; overflow: hidden; }
+.menu-pop { right: 12px; top: 54px; bottom: auto; display: grid; min-width: 210px; overflow: hidden; }
 .menu-pop button { padding: 13px 16px; text-align: left; }
 .menu-pop button:hover { background: var(--chip); }
 .danger { color: #c4462f; }
@@ -170,3 +170,16 @@ main { padding: 6px 8px 40px; max-width: 1400px; margin: 0 auto; }
 .card[class*="c-"] .c-excerpt { color: var(--ink); opacity: .85; }
 .swatch[class*="c-"] { background: var(--tint); }
 .card .pin-mark { position: absolute; top: 8px; right: 8px; width: 16px; height: 16px; fill: var(--soft); }
+
+/* note page: your note first, then what Hopper fetched from the page */
+#d-meta { text-align: center; }
+.d-body .chips { margin: 4px 0 14px; }
+.from-page { margin-top: 22px; }
+.from-page .divider { display: flex; align-items: center; gap: 10px; color: var(--soft); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 12px; }
+.from-page .divider::before, .from-page .divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.from-page img { width: 100%; border-radius: 12px; display: block; }
+.from-page .embed { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden; background: #000; }
+.from-page .embed iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.from-page .p-link { display: block; margin: 10px 0 2px; font-weight: 600; color: var(--ink); text-decoration: none; }
+.from-page .p-host { color: var(--soft); font-size: 12.5px; }
+.from-page .p-desc { color: var(--mid); font-size: 14.5px; line-height: 1.55; margin: 8px 0 0; }
