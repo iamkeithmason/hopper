@@ -5,6 +5,7 @@ import postgres from "npm:postgres@3.4.4";
 // v5 (18 Nov): keeps project tags filed by closeness (added_by rule) or added by Keith. The model breaks ties:
 // a faint Nearby project it also names becomes firm; its own projects are added only when nothing filed the note.
 // "Useful for, not made for" rule; prompt v5; { ids: [...] } mode for app notes; notes read through notes_for_ai.
+// After writing, notes with no embedding yet (image-only shares) are embedded from their tags and filed.
 // Reads UNLOCKED notes only, asks Claude for facets, and (when asked) saves them.
 // Changes from v3: fetched page text and stored images go to the model; a write step
 // saves tags to the people, works, projects and topics tables and locks notes the
@@ -282,6 +283,28 @@ async function buildParams(n: any, links: any[], atts: any[], model: string, sys
   return messageParams(model, system, text, images, opts.longCache === true);
 }
 
+// Notes that still have no embedding after tagging (image-only shares, for example) are embedded now,
+// from the tags and summary Claude just wrote, then filed by closeness if nothing has filed them yet.
+async function embedAndFileMissing(ids: string[], token: string) {
+  if (!ids.length) return 0;
+  const need = (await sql`select n.id from hopper.notes_for_ai n where n.id = any(${ids}::uuid[]) and n.tagged_at is not null
+                          and not exists (select 1 from hopper.note_embeddings e where e.note_id = n.id)`).map((r: any) => r.id);
+  // hopper-embed is CPU-heavy: four notes a call, one call at a time.
+  for (let i = 0; i < need.length; i += 4) {
+    const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/hopper-embed`, {
+      method: "POST", headers: { "content-type": "application/json", "x-hopper-token": token },
+      body: JSON.stringify({ ids: need.slice(i, i + 4) }) });
+    if (!r.ok) break;
+  }
+  let filed = 0;
+  for (const id of need) {
+    const [{ ok }] = await sql`select exists (select 1 from hopper.note_embeddings where note_id = ${id})
+                               and not exists (select 1 from hopper.note_projects where note_id = ${id}) as ok`;
+    if (ok) { await sql`select * from hopper.file_note(${id})`; filed++; }
+  }
+  return need.length;
+}
+
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
 
 Deno.serve(async (req: Request) => {
@@ -327,7 +350,8 @@ Deno.serve(async (req: Request) => {
       // 'collected' releases the batch's notes; until then they cannot be resubmitted.
       const finished = offset + limit >= lines.length;
       await sql`update hopper.batches set status = ${finished ? "collected" : "ended"}, counts = ${sql.json(b.request_counts)} where id = ${body.id}`;
-      return json({ id: b.id, total: lines.length, offset, done: Math.min(lines.length, offset + limit), ...out, usage });
+      const embedded = await embedAndFileMissing(lines.slice(offset, offset + limit).map((l) => JSON.parse(l).custom_id), token);
+      return json({ id: b.id, total: lines.length, offset, done: Math.min(lines.length, offset + limit), ...out, embedded, usage });
     }
 
     const model = body.model;
@@ -381,7 +405,8 @@ Deno.serve(async (req: Request) => {
       if (body.write === true && r.tags) r.write = await saveTags(n.id, r.tags, model);
       return { id: n.id, keep_file: n.keep_file, ...r };
     }));
-    return json({ model, prompt_version: PROMPT_VERSION, tagged: results.length, results });
+    const embedded = body.write === true ? await embedAndFileMissing(results.map((r: any) => r.id), token) : 0;
+    return json({ model, prompt_version: PROMPT_VERSION, tagged: results.length, embedded, results });
   } catch (e) {
     return json({ error: String(e).slice(0, 300) }, 500);
   }
