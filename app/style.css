@@ -1,11 +1,10 @@
 :root {
-  --bg: #f7f4ee; --card: #fff; --ink: #1c1b19; --mid: #5d5a54; --soft: #96928a; --line: #e4dfd5;
-  --chip: #efebe3; --accent: #d6784a; --faint: #b9b4aa;
+  --bg: #f7f4ee; --card: #fff; --ink: #1c1b19; --line: #e4dfd5; --accent: #d6784a;
   --radius: 14px; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #151413; --card: #1f1e1c; --ink: #f0ece4; --mid: #b3ada3; --soft: #8a857c; --line: #2f2d2a; --chip: #2a2826; --faint: #5d5953; --shadow: none; }
+  :root { --bg: #151413; --card: #1f1e1c; --ink: #f0ece4; --line: #2f2d2a; --shadow: none; }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--ink); }
@@ -35,8 +34,6 @@ header#top { position: sticky; top: 0; z-index: 10; background: var(--bg); paddi
 header#top.hide { transform: translateY(-100%); }
 .bar { display: flex; gap: 6px; align-items: center; }
 #search-form { flex: 1; }
-/* Wide screens: search sits at a comfortable width and widens while you use it. */
-@media (min-width: 700px) { #search-form { flex: 0 1 560px; transition: flex-basis .2s ease; } #search-form:focus-within { flex-basis: 900px; } }
 #q { border-radius: 22px; padding: 10px 16px; background: var(--card); }
 .icon-btn { width: 40px; height: 40px; border-radius: 20px; font-size: 20px; color: var(--mid); flex: none; }
 .icon-btn:hover { background: var(--chip); }
@@ -123,7 +120,7 @@ main { padding: 6px 8px 40px; }
 .spacer { flex: 1; }
 .small { font-size: 12.5px; }
 .quiet, .quiet-input { border: 0; background: transparent; padding: 6px 2px; border-radius: 0; resize: none; outline: none; width: 100%; color: var(--ink); }
-.quiet::placeholder, .quiet-input::placeholder { color: var(--soft); }
+.quiet::placeholder, .quiet-input::placeholder, input::placeholder, textarea::placeholder { color: var(--soft); opacity: 1; }
 .quiet.title { font-size: 21px; font-weight: 500; line-height: 1.3; }
 .quiet.body { font-size: 16px; line-height: 1.6; min-height: 3.2em; }
 .quiet.body.quote { font-family: Georgia, "Times New Roman", serif; font-size: 17px; }
@@ -144,6 +141,7 @@ main { padding: 6px 8px 40px; }
 .menu-pop button { padding: 13px 16px; text-align: left; }
 .menu-pop button:hover { background: var(--chip); }
 .danger { color: #c4462f; }
+@media (prefers-color-scheme: dark) { .danger { color: #f08a74; } }
 .icon-btn.on { color: var(--ink); background: var(--chip); }
 
 .chip { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
@@ -183,8 +181,37 @@ main { padding: 6px 8px 40px; }
   .c-TEAL { --tint: #0c625d; } .c-BLUE { --tint: #256377; } .c-CERULEAN { --tint: #284255; } .c-PURPLE { --tint: #472e5b; }
   .c-PINK { --tint: #6c394f; } .c-BROWN { --tint: #4b443a; } .c-GRAY { --tint: #232427; }
 }
+/* AA tokens, worked out per surface: secondary text (--mid, --soft) reaches 4.5:1 on its own surface and on a chip,
+   outlines (--faint) 3:1. Generated from the palette; tests/contrast_check.py checks the result. */
+:root { --mid: #575653; --soft: #666561; --faint: #8c8a86; --chip: #e8e5df; }
+.card, .pop, .menu { --mid: #5e5d5c; --soft: #6b6b6a; --faint: #929291; --chip: #efefef; }
+.c-RED { --mid: #423431; --soft: #56413e; --faint: #825f5b; --chip: #eaa59e; }
+.c-ORANGE { --mid: #362b24; --soft: #4b382d; --faint: #7b5542; --chip: #e4966f; }
+.c-YELLOW { --mid: #5c5946; --soft: #69664f; --faint: #908c6a; --chip: #efe9ad; }
+.c-GREEN { --mid: #51564b; --soft: #5d6356; --faint: #818b78; --chip: #d4e7c6; }
+.c-TEAL { --mid: #3d4642; --soft: #4a5551; --faint: #657872; --chip: #a9cfc6; }
+.c-BLUE { --mid: #4a4d4e; --soft: #55595b; --faint: #788083; --chip: #c7d6de; }
+.c-CERULEAN { --mid: #383d3e; --soft: #434b4e; --faint: #616e75; --chip: #a4c0ce; }
+.c-PURPLE { --mid: #3d393c; --soft: #4d474d; --faint: #706672; --chip: #c6b4cd; }
+.c-PINK { --mid: #524d4a; --soft: #625b58; --faint: #897e7b; --chip: #e7d4cf; }
+.c-BROWN { --mid: #4f4d48; --soft: #5e5b55; --faint: #827f76; --chip: #dbd5c7; }
+.c-GRAY { --mid: #555453; --soft: #626160; --faint: #888787; --chip: #e0e0e2; }
+@media (prefers-color-scheme: dark) {
+  :root { --mid: #9d9a95; --soft: #928f8a; --faint: #666460; --chip: #282726; }
+  .card, .pop, .menu { --mid: #a5a29c; --soft: #9c9a94; --faint: #6e6c68; --chip: #31302e; }
+  .c-RED { --mid: #dac6c3; --soft: #c6a1a4; --faint: #b17d85; --chip: #5d1224; }
+  .c-ORANGE { --mid: #d6c7bd; --soft: #bfa79a; --faint: #a78475; --chip: #522212; }
+  .c-YELLOW { --mid: #f0ece4; --soft: #d9ccb7; --faint: #bda581; --chip: #613a02; }
+  .c-GREEN { --mid: #d6d7ce; --soft: #adb8ac; --faint: #87998c; --chip: #1e3c2e; }
+  .c-TEAL { --mid: #f0ece4; --soft: #c7d3cc; --faint: #90b2ab; --chip: #094c49; }
+  .c-BLUE { --mid: #f0ece4; --soft: #d2d7d4; --faint: #9fb5b8; --chip: #1d4d5d; }
+  .c-CERULEAN { --mid: #cccdca; --soft: #a6adaf; --faint: #828e95; --chip: #1f3342; }
+  .c-PURPLE { --mid: #c9c0c4; --soft: #aca0ad; --faint: #908096; --chip: #372447; }
+  .c-PINK { --mid: #e3dad5; --soft: #c8b6b7; --faint: #ad9198; --chip: #542c3e; }
+  .c-BROWN { --mid: #d9d4cc; --soft: #bab5ac; --faint: #99938a; --chip: #3a352d; }
+  .c-GRAY { --mid: #aaa8a4; --soft: #a2a09c; --faint: #71706f; --chip: #353638; }
+}
 .card[class*="c-"], .detail[class*="c-"], .detail[class*="c-"] .editor-foot { background: var(--tint); }
-.card[class*="c-"] .c-excerpt { color: var(--ink); opacity: .85; }
 .swatch[class*="c-"] { background: var(--tint); }
 .card .pin-mark { position: absolute; top: 8px; right: 8px; width: 16px; height: 16px; fill: var(--soft); }
 

@@ -12,6 +12,7 @@ Live at <https://hopper-keith.vercel.app> (sign-in is limited to one email addre
 | `supabase/functions/` | Edge functions (Deno) for the Supabase project. |
 | `supabase/schema.sql` | Reference snapshot of the `hopper` schema. |
 | `tests/feed_check.py` | Feed smoke test: the real app against a fake API in headless Chrome. Checks cards never move, scrolling keeps loading on tall screens, and loading stops at the end. Run `python3 tests/feed_check.py` (needs Playwright and Chrome) before pushing feed or layout changes. |
+| `tests/contrast_check.py` | WCAG AA audit: every Keep colour and none, light and dark, cards, header and the open note; every visible text and placeholder at 4.5:1, chip outlines and icons at 3:1. Run before pushing colour or style changes. |
 
 ### Edge functions
 
