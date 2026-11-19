@@ -201,13 +201,13 @@ async function cards(rows: any[]) {
   });
 }
 
-// The design read (from hopper-design) as the note page shows it: only for images judged design references.
 // Each palette colour with the share of the image it covers, from the measurement stored with the read.
 function withShares(d: any) {
   const share = new Map((d.measured?.palette ?? []).map((m: any) => [String(m.hex).toLowerCase(), m.share]));
   return (d.palette ?? []).map((p: any) => ({ ...p, share: p.share ?? share.get(String(p.hex).toLowerCase()) ?? null }));
 }
 
+// The design read (from hopper-design) as the note page shows it: only for images judged design references.
 function designFor(d: any) {
   if (!d?.is_reference) return null;
   return {
