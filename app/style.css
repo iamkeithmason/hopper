@@ -65,6 +65,8 @@ main { padding: 6px 8px 40px; }
 .card.has-media { background: transparent !important; box-shadow: none; overflow: visible; }
 .card.has-media > .c-media { border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
 .card.has-media > .c-text.one { padding: 6px 4px 2px; }
+/* A Keep colour on an image note shows as a tinted label behind the caption. */
+.card.has-media[class*=" c-"] > .c-text.one { background: var(--tint); border-radius: 8px; margin-top: 6px; padding: 5px 8px; }
 .card .c-text.one { padding: 7px 12px 8px; }
 .card .c-line { margin: 0; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .badge { text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
