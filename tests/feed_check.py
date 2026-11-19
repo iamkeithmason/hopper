@@ -1,14 +1,15 @@
 """Feed smoke test: runs the real app against a fake API in headless Chrome.
 
-Checks the three things that have broken before:
+Checks the things that have broken before:
   1. cards never move once placed when the next batch loads (the CSS-columns reshuffle),
   2. scrolling keeps loading on a tall desktop screen (the stuck-at-40 bug),
-  3. loading stops cleanly at the end of the notes.
+  3. columns stay even, because images are sized before they're placed,
+  4. loading stops cleanly at the end of the notes.
 
 Run:  python3 tests/feed_check.py         (needs: pip install playwright, and Chrome or Chromium)
 Exit code 0 means all checks passed. No network, no sign-in, no real data.
 """
-import functools, http.server, json, os, re, shutil, sys, tempfile, threading
+import functools, http.server, json, os, re, shutil, sys, tempfile, threading, time
 
 from playwright.sync_api import sync_playwright
 
@@ -25,7 +26,7 @@ const FAKE = Array.from({ length: %d }, (_, i) => ({
   id: "00000000-0000-0000-0000-" + String(i).padStart(12, "0"),
   created_at: new Date(Date.UTC(2026, 10, 19) - i * 3600e3).toISOString(),
   format: i %% 2 ? "note" : "bookmark", title: "Note " + i, excerpt: "body ".repeat(5 + (i * 13) %% 40),
-  image: i %% 3 === 0 ? "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='300' height='" + (150 + (i * 53) %% 250) + "'/>") : null,
+  image: i %% 3 === 0 ? "/img/" + (150 + (i * 53) %% 450) + ".svg" : null,
   host: i %% 2 ? null : "youtu.be", projects: [] }));
 window.CALLS = [];
 window.fetch = async (url, o) => {
@@ -59,8 +60,21 @@ def main():
 
     class Quiet(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *a): pass
+        def do_GET(self):
+            # Fake images arrive slowly, as real ones do, in heights from 150 to 600px.
+            m = re.match(r"^/img/(\d+)\.svg", self.path)
+            if not m:
+                return super().do_GET()
+            time.sleep(0.25)
+            body = f"<svg xmlns='http://www.w3.org/2000/svg' width='300' height='{m.group(1)}'><rect width='100%' height='100%' fill='#456'/></svg>".encode()
+            self.send_response(200); self.send_header("Content-Type", "image/svg+xml"); self.send_header("Content-Length", str(len(body))); self.end_headers()
+            try: self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError): pass  # the page closed mid-download
     handler = functools.partial(Quiet, directory=tmp)
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    class Server(http.server.ThreadingHTTPServer):
+        daemon_threads = True
+        def handle_error(self, *a): pass
+    srv = Server(("127.0.0.1", 0), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_address[1]}/index.html"
 
@@ -87,6 +101,17 @@ def main():
                     check(grew, f"{w}x{h} run {run + 1}: scrolling to the bottom loaded more ({len(before)} -> {pg.evaluate(COUNT)})")
                     check(not errors, f"{w}x{h} run {run + 1}: no page errors {errors[:1]}")
                 pg.close()
+
+        # Columns stay even: images are sized before they're placed, so no column runs far ahead.
+        for w, h in ((1440, 900), (400, 850)):
+            pg = b.new_page(viewport={"width": w, "height": h})
+            pg.goto(url); pg.wait_for_timeout(2500)
+            heights = pg.evaluate("[...document.querySelectorAll('#feed > .col')].map((c) => c.offsetHeight)")
+            unsized = pg.evaluate("[...document.querySelectorAll('#feed .c-media img')].filter((i) => !i.style.aspectRatio).length")
+            spread = max(heights) - min(heights)
+            check(spread < 400, f"{w}x{h}: columns end within 400px of each other ({spread}px, {heights})")
+            check(unsized == 0, f"{w}x{h}: every image had its size reserved before placing ({unsized} not)")
+            pg.close()
 
         pg = b.new_page(viewport={"width": 2560, "height": 1400})
         pg.goto(url); pg.wait_for_timeout(1200)

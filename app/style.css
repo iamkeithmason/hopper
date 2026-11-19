@@ -35,7 +35,6 @@ header#top.hide { transform: translateY(-100%); }
 .bar { display: flex; gap: 6px; align-items: center; }
 #search-form { flex: 1; }
 /* Wide screens: search sits at a comfortable width and widens while you use it. */
-@media (min-width: 700px) { #search-form { flex: 0 1 560px; transition: flex-basis .2s ease; } #search-form:focus-within { flex-basis: 900px; } }
 #q { border-radius: 22px; padding: 10px 16px; background: var(--card); }
 .icon-btn { width: 40px; height: 40px; border-radius: 20px; font-size: 20px; color: var(--mid); flex: none; }
 .icon-btn:hover { background: var(--chip); }
@@ -64,9 +63,9 @@ main { padding: 6px 8px 40px; }
 /* Image cards: the image is its own rounded tile and the caption sits on the page beneath it. */
 .card.has-media { background: transparent !important; box-shadow: none; overflow: visible; }
 .card.has-media > .c-media { border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
-.card.has-media > .c-text.one { padding: 6px 4px 2px; }
+.card.has-media > .c-text.one { padding: 6px 12px 2px; } /* 12px: lines up with text cards and the hover overlay */
 /* A Keep colour on an image note shows as a tinted label behind the caption. */
-.card.has-media[class*=" c-"] > .c-text.one { background: var(--tint); border-radius: 8px; margin-top: 6px; padding: 5px 8px; }
+.card.has-media[class*=" c-"] > .c-text.one { background: var(--tint); border-radius: 8px; margin-top: 6px; padding: 5px 12px; }
 .card .c-text.one { padding: 7px 12px 8px; }
 .card .c-line { margin: 0; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .badge { text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
@@ -145,7 +144,7 @@ main { padding: 6px 8px 40px; }
 .menu-pop button { padding: 13px 16px; text-align: left; }
 .menu-pop button:hover { background: var(--chip); }
 .danger { color: #c4462f; }
-@media (prefers-color-scheme: dark) { .danger { color: #f08a74; } }
+@media (prefers-color-scheme: dark) { .danger, .view-banner button.danger { color: #f08a74; } }
 .icon-btn.on { color: var(--ink); background: var(--chip); }
 
 .chip { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
@@ -192,7 +191,7 @@ main { padding: 6px 8px 40px; }
 .view-actions { display: flex; gap: 16px; }
 .view-banner button.danger { color: #c4462f; }
 .c-erase { font-size: 12px; color: var(--soft); padding: 2px 12px 10px; }
-.card.has-media .c-erase { padding: 2px 4px 0; }
+.card.has-media .c-erase { padding: 2px 12px 0; }
 .bin-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: var(--chip); border-radius: 12px; padding: 10px 12px; margin: 0 0 14px; }
 .bin-banner span { flex: 1 1 180px; color: var(--mid); }
 .bin-banner button { padding: 8px 14px; border-radius: 10px; font-weight: 600; }

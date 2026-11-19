@@ -169,7 +169,7 @@ function card(n) {
     projects ? el("b", {}, projects) : null,
     el("span", {}, fmtDate(n.created_at)));
   const media = n.image ? el("div", { class: "c-media" },
-    el("img", { src: n.image, loading: "lazy", alt: "", onerror: (e) => { e.target.closest(".card")?.classList.remove("has-media"); e.target.parentNode.replaceWith(hover); } }), hover) : null;
+    el("img", { src: n.image, alt: "", onerror: (e) => { e.target.closest(".card")?.classList.remove("has-media"); e.target.parentNode.replaceWith(hover); } }), hover) : null;
   return el("div", { class: `card ${n.format || ""} ${colourClass(n.color)}${media ? " has-media" : ""}`, "data-id": n.id, onclick: () => openNote(n.id) },
     n.pinned ? (() => { const s = icon("pinned"); s.classList.add("pin-mark"); return s; })() : null,
     media, text, media ? null : hover, erase);
@@ -183,7 +183,7 @@ function card(n) {
 const colCount = () => Math.max(2, Math.floor((document.documentElement.clientWidth - 16) / 230));
 function layout(box, cards = []) {
   const n = colCount();
-  box.dataset.cols = n; box.seq = 0;
+  box.dataset.cols = n; box.seq = 0; box.gen = (box.gen || 0) + 1;
   box.replaceChildren(...Array.from({ length: n }, () => el("div", { class: "col" })));
   place(box, cards);
 }
@@ -195,10 +195,31 @@ function place(box, cards) {
     const i = h.indexOf(Math.min(...h));
     c.dataset.seq = box.seq++;
     cols[i].append(c);
-    // An image that hasn't loaded yet has no height: count it as square so the next card doesn't pile in behind it.
-    const img = c.querySelector("img");
-    h[i] += c.offsetHeight + (img && !img.complete ? c.offsetWidth : 0) + 10;
+    // sizeImages has usually reserved each image's space already; one it couldn't size counts as square.
+    const img = c.querySelector(".c-media img");
+    h[i] += c.offsetHeight + (img && !img.style.aspectRatio && !img.complete ? c.offsetWidth : 0) + 10;
   }
+}
+// Wait briefly for each image's size (its header arrives long before the image) and reserve the space with
+// aspect-ratio, so every card's real height is known when it is placed and the columns stay even.
+function sizeImages(cards, wait = 1500) {
+  const imgs = cards.map((c) => c.querySelector(".c-media img")).filter(Boolean);
+  return Promise.all(imgs.map((img) => new Promise((done) => {
+    const t0 = performance.now();
+    (function poll() {
+      if (img.naturalWidth) { img.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`; return done(); }
+      if (img.complete || performance.now() - t0 > wait) return done();
+      setTimeout(poll, 40);
+    })();
+  })));
+}
+// Places a batch once its images are sized. Returns false if the board was reset meanwhile (new filter or
+// search), so a stale batch never lands in the new board.
+async function placeSized(box, cards, gen = box.gen) {
+  await sizeImages(cards);
+  if (box.gen !== gen) return false;
+  place(box, cards);
+  return true;
 }
 const hasCards = (box) => !!box.querySelector(".card");
 let resizeTimer;
@@ -218,8 +239,10 @@ async function loadPinned() {
   if (state.q || state.archived || state.bin) { wrap.hidden = true; return; }
   try {
     const { notes } = await api({ action: "feed", pinned: true, project_id: state.project, topic: state.topic, limit: 40 });
+    const cards = notes.map(card);
+    await sizeImages(cards);
     wrap.hidden = notes.length === 0;
-    layout($("pinned"), notes.map(card));
+    layout($("pinned"), cards);
   } catch { wrap.hidden = true; }
 }
 
@@ -233,28 +256,32 @@ function resetFeed() {
 async function loadMore() {
   if (state.loading || state.done) return;
   state.loading = true; $("more").textContent = "Loading…";
+  const gen = $("feed").gen; // a reset while this batch loads makes it stale
   try {
     if (state.bin) {
       // The Bin loads in pages as you scroll, like the feed.
       const { notes, bin_days, total } = await api({ action: "bin", offset: state.binOffset, limit: 60 });
-      place($("feed"), notes.map(card));
-      state.binOffset += notes.length;
-      if (notes.length < 60) state.done = true;
-      $("status").textContent = !total ? "The Bin is empty."
-        : `${total} note${total === 1 ? "" : "s"} in the Bin. Notes are erased ${bin_days} days after you delete them.`;
+      if (await placeSized($("feed"), notes.map(card), gen)) {
+        state.binOffset += notes.length;
+        if (notes.length < 60) state.done = true;
+        $("status").textContent = !total ? "The Bin is empty."
+          : `${total} note${total === 1 ? "" : "s"} in the Bin. Notes are erased ${bin_days} days after you delete them.`;
+      }
     } else if (state.q) {
       const { notes } = await api({ action: "search", q: state.q });
-      place($("feed"), notes.map(card));
-      $("status").textContent = notes.length ? `Closest matches for “${state.q}”` : `Nothing close to “${state.q}”`;
-      state.done = true;
+      if (await placeSized($("feed"), notes.map(card), gen)) {
+        $("status").textContent = notes.length ? `Closest matches for “${state.q}”` : `Nothing close to “${state.q}”`;
+        state.done = true;
+      }
     } else {
       const { notes } = await api({ action: "feed", project_id: state.project, topic: state.topic, before: state.oldest, archived: state.archived, pinned: state.archived ? undefined : false, limit: 40 });
-      place($("feed"), notes.map(card));
-      if (notes.length) state.oldest = notes[notes.length - 1].created_at;
-      if (notes.length < 40) state.done = true;
-      if (state.archived && !hasCards($("feed"))) $("status").textContent = "Nothing archived.";
+      if (await placeSized($("feed"), notes.map(card), gen)) {
+        if (notes.length) state.oldest = notes[notes.length - 1].created_at;
+        if (notes.length < 40) state.done = true;
+        if (state.archived && !hasCards($("feed"))) $("status").textContent = "Nothing archived.";
+      }
     }
-  } catch (e) { $("status").textContent = e.message; state.done = true; }
+  } catch (e) { if ($("feed").gen === gen) { $("status").textContent = e.message; state.done = true; } }
   state.loading = false; $("more").textContent = "";
   // The observer only fires when "more" crosses into range. If a batch didn't push it back out (a tall screen,
   // short cards), nothing would fire again, so look again: observing afresh reports the current state.
