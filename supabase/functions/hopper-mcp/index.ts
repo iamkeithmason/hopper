@@ -2,12 +2,16 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.4";
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 
-// Hopper MCP server (HOP-18), version 1: read-only.
+// Hopper MCP server (HOP-18), version 2: read-only.
 // Lets Claude search Hopper and use its design reference library from any MCP client.
 // Transport: MCP Streamable HTTP, stateless, JSON responses only (no SSE stream).
-// Auth: "Authorization: Bearer <token>", checked against hopper.settings 'mcp_token_sha256'.
-// The token itself lives in Supabase Vault ('hopper_mcp_token'), never in this repo.
-// Database jobs and tests may use the x-hopper-token invoke token instead.
+// Auth, any of:
+//   - OAuth (claude.ai, desktop): Supabase Auth's OAuth 2.1 server issues the token after Keith approves on
+//     the app's /oauth/consent page. The token must belong to hopper.settings 'owner_email'. Clients find the
+//     server through the protected-resource metadata at <this function>/.well-known/oauth-protected-resource.
+//   - A static bearer token (Claude Code), checked against hopper.settings 'mcp_token_sha256'.
+//     The token itself lives in Supabase Vault ('hopper_mcp_token'), never in this repo.
+//   - The x-hopper-token invoke token, for database jobs and tests.
 //
 // Every read goes through hopper.notes_for_ai, which holds unlocked notes only, so locked notes
 // never reach the model on the other end. Embeddings exist only for unlocked notes.
@@ -16,6 +20,10 @@ const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 3 
 // @ts-ignore Supabase global is provided by the edge runtime
 const session = new Supabase.ai.Session("gte-small");
 const IMAGE_BUCKET = "hopper-images";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
+const RESOURCE = `${SUPABASE_URL}/functions/v1/hopper-mcp`;
+const RESOURCE_METADATA = `${RESOURCE}/.well-known/oauth-protected-resource`;
 const PROTOCOL = "2025-06-18";
 
 async function sha256(s: string) {
@@ -43,7 +51,7 @@ const TOOLS = [
       properties: {
         query: { type: "string", description: "What you're looking for, e.g. 'calm fintech dashboard with one accent colour' or 'storybook map'." },
         aesthetics: { type: "array", items: { type: "string" }, description: "Only references carrying all of these vocabulary tags (see list_aesthetics)." },
-        kind: { type: "string", description: "Only this kind: app-ui, web-ui, dashboard, brand-identity, logo, poster, editorial, packaging, typography, illustration, photography, product, interior, data-viz, other." },
+        kind: { type: "string", description: "Only this kind: app-ui, web-ui, dashboard, brand-identity, logo, poster, editorial, game-layout (tabletop and RPG rulebook pages), packaging, typography, illustration, photography, product, interior, data-viz, other." },
         limit: { type: "integer", description: "How many to return, 1 to 20 (default 8)." },
       },
     },
@@ -284,6 +292,9 @@ async function handle(msg: any) {
   }
 }
 
+// OAuth tokens already checked, by sha256, for a few minutes, so each tool call doesn't ask Supabase Auth again.
+const checked = new Map<string, number>();
+
 async function authorised(req: Request) {
   const invoke = req.headers.get("x-hopper-token");
   if (invoke) {
@@ -292,15 +303,37 @@ async function authorised(req: Request) {
   }
   const auth = req.headers.get("authorization") ?? "";
   if (!auth.startsWith("Bearer ")) return false;
+  const token = auth.slice(7).trim();
+  const hash = await sha256(token);
   const [row] = await sql`select value from hopper.settings where key = 'mcp_token_sha256'`;
-  return !!row && (await sha256(auth.slice(7).trim())) === row.value;
+  if (row && hash === row.value) return true;
+  if ((checked.get(hash) ?? 0) > Date.now()) return true;
+  // An OAuth access token from Supabase Auth: valid only if it belongs to the owner.
+  const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { authorization: `Bearer ${token}`, apikey: ANON } });
+  if (!r.ok) return false;
+  const user = await r.json();
+  const [{ value: owner }] = await sql`select value from hopper.settings where key = 'owner_email'`;
+  if (!user?.email || String(user.email).toLowerCase() !== String(owner).toLowerCase()) return false;
+  checked.set(hash, Date.now() + 5 * 60_000);
+  if (checked.size > 50) for (const [k, t] of checked) if (t < Date.now()) checked.delete(k);
+  return true;
 }
+
+// RFC 9728: tells MCP clients which authorisation server issues tokens for this server.
+const resourceMetadata = () => new Response(JSON.stringify({
+  resource: RESOURCE,
+  authorization_servers: [`${SUPABASE_URL}/auth/v1`],
+  bearer_methods_supported: ["header"],
+  resource_name: "Hopper",
+}), { headers: { "content-type": "application/json", "cache-control": "public, max-age=3600" } });
 
 Deno.serve(async (req: Request) => {
   try {
+    if (new URL(req.url).pathname.endsWith("/.well-known/oauth-protected-resource")) return resourceMetadata();
     if (!(await authorised(req))) {
       return new Response(JSON.stringify({ error: "unauthorised" }), {
-        status: 401, headers: { "content-type": "application/json", "www-authenticate": 'Bearer realm="hopper"' },
+        status: 401,
+        headers: { "content-type": "application/json", "www-authenticate": `Bearer realm="hopper", resource_metadata="${RESOURCE_METADATA}"` },
       });
     }
     // Stateless server: no event stream to open (GET) and no session to end (DELETE).

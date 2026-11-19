@@ -2,7 +2,8 @@
   "cleanUrls": true,
   "rewrites": [
     { "source": "/share", "destination": "/" },
-    { "source": "/n/:id", "destination": "/" }
+    { "source": "/n/:id", "destination": "/" },
+    { "source": "/oauth/consent", "destination": "/consent" }
   ],
   "headers": [
     { "source": "/sw.js", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },

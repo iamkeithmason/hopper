@@ -37,7 +37,7 @@ const str = (description: string) => ({ type: "string", description });
 const strs = (description: string, max = 8) => ({ type: "array", items: { type: "string" }, description: `${description} At most ${max}.` });
 const obj = (properties: Record<string, unknown>) => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
 
-const KINDS = ["app-ui", "web-ui", "dashboard", "brand-identity", "logo", "poster", "editorial", "packaging",
+const KINDS = ["app-ui", "web-ui", "dashboard", "brand-identity", "logo", "poster", "editorial", "game-layout", "packaging",
   "typography", "illustration", "photography", "product", "interior", "data-viz", "other"];
 const ROLES = ["background", "surface", "text", "accent", "brand", "secondary", "imagery"];
 
@@ -86,6 +86,8 @@ For each image, call record_design_read exactly once and write nothing else.
 IS IT A REFERENCE? True for interfaces, websites, brand and identity work, logos, posters, editorial and book design, packaging, typography specimens, illustration or photography kept for its style, product, interior and data-visualisation design. False for photos of text or book pages, documents, receipts, chat screenshots, memes kept for their words, and ordinary snapshots. For a non-reference, give is_reference false, kind, a summary and confidence, and leave every other field empty ("" or []), with density "n/a".
 
 PALETTE: a measured palette follows the image, as hex values with the share of the image each covers. Choose palette colours ONLY from that list, copying hex values exactly, and give each a role. Large shares are usually background or surface; a small saturated share is often the accent. Use role "imagery" for colours that come from photographs inside the design rather than from the design system. Skip measured colours that are only JPEG noise or anti-aliasing.
+
+KIND: use "game-layout" for tabletop and RPG rulebook pages, game manuals and zines judged as layout references, so they can be searched apart from editorial design. A close-up of a single rules table kept for its rules is not a reference.
 
 TYPOGRAPHY: classify what you see. Name a typeface family only when you genuinely recognise it, with an honest confidence; a wrong name is worse than none.
 

@@ -8,7 +8,7 @@ Live at <https://hopper-keith.vercel.app> (sign-in is limited to one email addre
 
 | Folder | What it is |
 |---|---|
-| `app/` | The PWA: plain HTML, CSS and JavaScript, no build step. Installable on Android, with a share target at `/share`. |
+| `app/` | The PWA: plain HTML, CSS and JavaScript, no build step. Installable on Android, with a share target at `/share`. `/oauth/consent` is the OAuth consent page for MCP clients. |
 | `supabase/functions/` | Edge functions (Deno) for the Supabase project. |
 | `supabase/schema.sql` | Reference snapshot of the `hopper` schema. |
 
@@ -41,7 +41,10 @@ To add it to Claude Code:
 claude mcp add --transport http hopper https://hhfjfbuiuhhdhwhfwlpv.supabase.co/functions/v1/hopper-mcp --header "Authorization: Bearer <token from Vault>"
 ```
 
-claude.ai and the desktop app need OAuth sign-in instead of a token: that is a separate ticket.
+claude.ai and the desktop app sign in with OAuth instead: Supabase Auth's OAuth 2.1 server (Authentication > OAuth Server,
+authorization path `/oauth/consent`, dynamic client registration on) sends the browser to the app's consent page
+(`app/consent.html`), and `hopper-mcp` accepts the resulting token only for `settings.owner_email`. Add the server URL above
+as a custom connector in claude.ai (Settings > Connectors); the desktop and mobile apps pick it up from there.
 To rotate the token, run the block in `supabase/migrations/20261119093000_hopper_mcp_token.sql` again.
 
 ## Deploying
