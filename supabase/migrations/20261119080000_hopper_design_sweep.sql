@@ -1,7 +1,7 @@
 -- HOP-20: read new images automatically with hopper-design.
 -- Runs ten minutes after each tagging sweep, so new captures have had the sensitive check first
 -- (hopper-design itself only reads notes with tagged_at set). Switch: settings.auto_design ('on' or 'off').
--- Six images a run at about $0.03 each (Opus 5.5).
+-- About $0.03 an image (Opus 5.5). Superseded: 20261119083000 asks for two images a run.
 
 insert into hopper.settings (key, value) values ('auto_design', 'on')
   on conflict (key) do update set value = excluded.value;

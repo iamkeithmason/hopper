@@ -1,5 +1,6 @@
 // Measured palette for one image: real pixel colours, so hex values are never guessed by the model.
-// Decode, shrink to about 160px on the long side, median-cut into up to 16 boxes,
+// Decode, sample about 160 pixels along the long side (a stride, no resize: edge functions have little CPU),
+// median-cut into up to 16 boxes,
 // merge boxes that look alike (CIE76 distance under 10), and keep colours covering at least 1%.
 import { decode } from "https://deno.land/x/imagescript@1.3.0/mod.ts";
 
@@ -47,11 +48,15 @@ function medianCut(px: Px[], boxes: number): Px[][] {
 export async function measure(bytes: Uint8Array): Promise<Measured> {
   const img: any = await decode(bytes);
   const width = img.width, height = img.height;
-  const k = Math.min(1, 160 / Math.max(width, height));
-  if (k < 1) img.resize(Math.max(1, Math.round(width * k)), Math.max(1, Math.round(height * k)));
+  const step = Math.max(1, Math.ceil(Math.max(width, height) / 160));
   const bm: Uint8ClampedArray = img.bitmap;
   const px: Px[] = [];
-  for (let i = 0; i < bm.length; i += 4) if (bm[i + 3] > 127) px.push([bm[i], bm[i + 1], bm[i + 2]]);
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      const i = (y * width + x) * 4;
+      if (bm[i + 3] > 127) px.push([bm[i], bm[i + 1], bm[i + 2]]);
+    }
+  }
   const total = px.length || 1;
 
   let groups = medianCut(px, 16).filter((b) => b.length).map((b) => {
