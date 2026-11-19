@@ -120,7 +120,10 @@ function brief(d: any) {
   if (!d) return null;
   return {
     kind: d.kind, summary: d.summary,
-    palette: (d.palette ?? []).map((p: any) => `${p.hex} ${p.role} (${p.name})`),
+    palette: (d.palette ?? []).map((p: any) => {
+      const share = p.share ?? (d.measured?.palette ?? []).find((m: any) => String(m.hex).toLowerCase() === String(p.hex).toLowerCase())?.share;
+      return `${p.hex} ${p.role} (${p.name})${share ? `, about ${Math.max(1, Math.round(share))}% of the image` : ""}`;
+    }),
     type: d.typography?.classification ?? [],
     good_reference_for: d.good_reference_for, how_to_borrow: d.how_to_borrow,
   };

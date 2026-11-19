@@ -437,8 +437,30 @@ const VIDEO = [
 // Design notes (HOP-20): the design read of images judged design references. Palette swatches (tap to copy the hex),
 // the note's aesthetic tags and "how to borrow this" up front; type, layout and techniques folded away.
 const HEX = /^#[0-9a-f]{6}$/i;
-async function copyHex(hex) {
-  try { await navigator.clipboard.writeText(hex); toast(`Copied ${hex}`); } catch { toast(hex); }
+async function copyHex(hex, name) {
+  const label = name ? `${name} (${hex})` : hex;
+  try { await navigator.clipboard.writeText(hex); toast(`Copied ${label}`); } catch { toast(label); }
+}
+
+// The palette as one strip across the container, each colour as wide as the share of the image it covers.
+// Names and roles show on hover or focus, not by default; a click or tap copies the hex.
+function paletteStrip(palette) {
+  const cols = palette.filter((p) => HEX.test(p.hex));
+  if (!cols.length) return null;
+  const hasShare = cols.every((p) => p.share > 0);
+  const sorted = hasShare ? [...cols].sort((a, b) => b.share - a.share) : cols;
+  const total = hasShare ? sorted.reduce((t, p) => t + p.share, 0) : sorted.length;
+  const label = el("p", { class: "strip-label", "aria-live": "polite" });
+  const describe = (p) => [p.name, p.role, hasShare ? `about ${Math.max(1, Math.round(p.share))}% of the image` : null].filter(Boolean).join(" · ");
+  const strip = el("div", { class: "palette-strip", onmouseleave: () => (label.textContent = "") },
+    sorted.map((p) => {
+      const b = el("button", { type: "button", class: "strip-sw", style: `background:${p.hex};flex-grow:${hasShare ? p.share / total : 1}`,
+        "aria-label": `${describe(p)}. Copy ${p.hex}`, onclick: () => { label.textContent = describe(p); copyHex(p.hex, p.name); } });
+      b.addEventListener("mouseenter", () => (label.textContent = describe(p)));
+      b.addEventListener("focus", () => (label.textContent = describe(p)));
+      return b;
+    }));
+  return el("div", { class: "palette" }, strip, label);
 }
 function designNotes(n) {
   const reads = (n.images || []).map((i) => i.design).filter(Boolean);
@@ -449,14 +471,12 @@ function designNotes(n) {
   };
   return el("section", { class: "design-notes" },
     el("h3", {}, "Design notes"),
-    n.aesthetics?.length ? el("div", { class: "chips" }, n.aesthetics.map((a) => el("span", { class: "chip" }, a))) : null,
     reads.map((d, i) => el("div", { class: "dn-read" },
       reads.length > 1 ? el("p", { class: "dn-label" }, `Image ${i + 1}`) : null,
       d.summary ? el("p", { class: "dn-summary" }, d.summary) : null,
-      d.palette.length ? el("div", { class: "swatches" }, d.palette.filter((p) => HEX.test(p.hex)).map((p) =>
-        el("button", { type: "button", class: "swatch-chip", title: `Copy ${p.hex}`, onclick: () => copyHex(p.hex) },
-          el("span", { class: "sw", style: `background:${p.hex}` }),
-          el("span", { class: "sw-text" }, el("b", {}, p.name || p.role), el("small", {}, `${p.hex} · ${p.role}`))))) : null,
+      // The note's aesthetic tags sit under the first description.
+      i === 0 && n.aesthetics?.length ? el("div", { class: "chips" }, n.aesthetics.map((a) => el("span", { class: "chip" }, a))) : null,
+      d.palette.length ? paletteStrip(d.palette) : null,
       d.borrow ? el("div", { class: "borrow" }, el("p", { class: "borrow-k" }, "How to borrow this"), el("p", {}, d.borrow)) : null,
       el("details", { class: "dn-more" },
         el("summary", {}, "Type, layout and techniques"),
