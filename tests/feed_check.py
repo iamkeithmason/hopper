@@ -4,6 +4,7 @@ Checks the things that have broken before:
   1. cards never move once placed when the next batch loads (the CSS-columns reshuffle),
   2. scrolling keeps loading on a tall desktop screen (the stuck-at-40 bug),
   3. columns stay even, because images are sized before they're placed,
+     and no hover overlay is cut off on tiny notes or wide images,
   4. loading stops cleanly at the end of the notes.
 
 Run:  python3 tests/feed_check.py         (needs: pip install playwright, and Chrome or Chromium)
@@ -25,9 +26,11 @@ const createClient = () => ({ auth: {
 const FAKE = Array.from({ length: %d }, (_, i) => ({
   id: "00000000-0000-0000-0000-" + String(i).padStart(12, "0"),
   created_at: new Date(Date.UTC(2026, 10, 19) - i * 3600e3).toISOString(),
-  format: i %% 2 ? "note" : "bookmark", title: "Note " + i, excerpt: "body ".repeat(5 + (i * 13) %% 40),
-  image: i %% 3 === 0 ? "/img/" + (150 + (i * 53) %% 450) + ".svg" : null,
-  host: i %% 2 ? null : "youtu.be", projects: [] }));
+  format: i %% 2 ? "note" : "bookmark",
+  // every 7th note is tiny (one short line, like an email address); every 11th image is a wide banner
+  title: i %% 7 === 0 ? null : "Note " + i, excerpt: i %% 7 === 0 ? "simon@blah.biz" : "body ".repeat(5 + (i * 13) %% 40),
+  image: i %% 3 === 0 ? "/img/" + (i %% 11 === 0 ? 40 : 150 + (i * 53) %% 450) + ".svg" : null,
+  host: i %% 2 ? null : "youtu.be", projects: i %% 5 ? ["Essays", "Lurûn", "Portfolio and job search", "English life trails"] : [] }));
 window.CALLS = [];
 window.fetch = async (url, o) => {
   const b = JSON.parse(o.body); CALLS.push(b); let r = {};
@@ -111,6 +114,11 @@ def main():
             spread = max(heights) - min(heights)
             check(spread < 400, f"{w}x{h}: columns end within 400px of each other ({spread}px, {heights})")
             check(unsized == 0, f"{w}x{h}: every image had its size reserved before placing ({unsized} not)")
+            clipped = pg.evaluate("""[...document.querySelectorAll('#feed .hover')].filter((o) => {
+              const box = o.getBoundingClientRect(), pad = parseFloat(getComputedStyle(o).paddingTop);
+              return [...o.children].some((c) => { const r = c.getBoundingClientRect();
+                return r.top < box.top + pad - 1 || r.right > box.right + 1; }); }).length""")
+            check(clipped == 0, f"{w}x{h}: no hover overlay is cut off, even on tiny notes and wide images ({clipped} cut off)")
             pg.close()
 
         pg = b.new_page(viewport={"width": 2560, "height": 1400})
