@@ -285,16 +285,26 @@ async function buildParams(n: any, links: any[], atts: any[], model: string, sys
 
 // Notes that still have no embedding after tagging (image-only shares, for example) are embedded now,
 // from the tags and summary Claude just wrote, then filed by closeness if nothing has filed them yet.
+// Each run also picks up to four older notes that a previous run failed to embed, so misses heal themselves.
 async function embedAndFileMissing(ids: string[], token: string) {
-  if (!ids.length) return 0;
-  const need = (await sql`select n.id from hopper.notes_for_ai n where n.id = any(${ids}::uuid[]) and n.tagged_at is not null
-                          and not exists (select 1 from hopper.note_embeddings e where e.note_id = n.id)`).map((r: any) => r.id);
-  // hopper-embed is CPU-heavy: four notes a call, one call at a time.
+  const need = (await sql`(select n.id from hopper.notes_for_ai n where n.id = any(${ids}::uuid[]) and n.tagged_at is not null
+                            and not exists (select 1 from hopper.note_embeddings e where e.note_id = n.id))
+                          union
+                          (select n.id from hopper.notes_for_ai n where n.tagged_at is not null
+                            and not exists (select 1 from hopper.note_embeddings e where e.note_id = n.id)
+                           order by n.tagged_at limit 4)`).map((r: any) => r.id);
+  if (!need.length) return 0;
+  // hopper-embed is CPU-heavy: four notes a call, one call at a time. It can fail under load,
+  // so wait and retry once, then carry on with the next group rather than stopping.
+  const embedChunk = (chunk: string[]) => fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/hopper-embed`, {
+    method: "POST", headers: { "content-type": "application/json", "x-hopper-token": token },
+    body: JSON.stringify({ ids: chunk }) }).then((r) => r.ok).catch(() => false);
   for (let i = 0; i < need.length; i += 4) {
-    const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/hopper-embed`, {
-      method: "POST", headers: { "content-type": "application/json", "x-hopper-token": token },
-      body: JSON.stringify({ ids: need.slice(i, i + 4) }) });
-    if (!r.ok) break;
+    const chunk = need.slice(i, i + 4);
+    if (!(await embedChunk(chunk))) {
+      await new Promise((res) => setTimeout(res, 5000));
+      await embedChunk(chunk);
+    }
   }
   let filed = 0;
   for (const id of need) {
