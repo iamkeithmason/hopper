@@ -85,8 +85,79 @@ const OEMBED: [RegExp, string, string][] = [
   [/^https?:\/\/(?:www\.)?vimeo\.com\/(\d+)/i, "vimeo", "https://vimeo.com/api/oembed.json?url="],
 ];
 
-async function pageMeta(url: string) {
-  const out: { url: string; title?: string; text?: string; image?: string; ok: boolean; kind?: string; provider?: string; media_id?: string } = { url, ok: false };
+// HOP: images behind links. Hopper keeps its own copy of the picture when a shared link is one: an image
+// address (opened on its own in a browser tab, say), or a page on a picture site, where the page's preview
+// image is the thing being saved. Picture-site links carry tokens or move, so a stored address can stop working.
+// Article and video previews stay as links: their pictures are decoration, not what was saved.
+const PICTURE_SITES = /(^|\.)(pinterest\.[a-z.]+|pin\.it|pinimg\.com|behance\.net|dribbble\.com|deviantart\.com|wixmp\.com|artstation\.com|are\.na|flickr\.com|unsplash\.com|instagram\.com|tumblr\.com|cosmos\.so|savee\.it)$/i;
+const IMAGE_TYPES: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
+const MAX_IMAGE = 8_000_000;
+const UA = "Mozilla/5.0 (compatible; Hopper/1.0; personal notes app)";
+type Picture = { bytes: Uint8Array; mime: string; source: string };
+
+const hostOf = (u: string) => { try { return new URL(u).hostname; } catch { return ""; } };
+const pictureSite = (...urls: string[]) => urls.some((u) => PICTURE_SITES.test(hostOf(u)));
+
+// The body of a response, if it is an image Claude can read and not too big. Otherwise null (and the body is let go).
+async function readPicture(r: Response, source: string): Promise<Picture | null> {
+  const mime = (r.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (!r.ok || !IMAGE_TYPES[mime] || Number(r.headers.get("content-length") ?? 0) > MAX_IMAGE) { await r.body?.cancel(); return null; }
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  return bytes.length && bytes.length <= MAX_IMAGE ? { bytes, mime, source } : null;
+}
+
+async function fetchPicture(url: string, referer?: string): Promise<Picture | null> {
+  try {
+    const headers: Record<string, string> = { "user-agent": UA, accept: "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8" };
+    if (referer) headers.referer = referer;
+    const r = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(8000), headers });
+    return await readPicture(r, url);
+  } catch (_) { return null; }
+}
+
+// Width and height from the file header (JPEG, PNG, GIF, WebP), so the board can reserve the space. Null if unsure.
+function pictureSize(b: Uint8Array): { width: number; height: number } | null {
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  try {
+    if (b[0] === 0x89 && b[1] === 0x50) return { width: v.getUint32(16), height: v.getUint32(20) };
+    if (b[0] === 0x47 && b[1] === 0x49) return { width: v.getUint16(6, true), height: v.getUint16(8, true) };
+    if (b[0] === 0x52 && b[8] === 0x57) {
+      const kind = String.fromCharCode(b[12], b[13], b[14], b[15]);
+      if (kind === "VP8 ") return { width: v.getUint16(26, true) & 0x3fff, height: v.getUint16(28, true) & 0x3fff };
+      if (kind === "VP8L") { const x = v.getUint32(21, true); return { width: (x & 0x3fff) + 1, height: ((x >> 14) & 0x3fff) + 1 }; }
+      if (kind === "VP8X") return { width: 1 + (b[24] | (b[25] << 8) | (b[26] << 16)), height: 1 + (b[27] | (b[28] << 8) | (b[29] << 16)) };
+    }
+    if (b[0] === 0xff && b[1] === 0xd8) {
+      let i = 2;
+      while (i + 9 < b.length) {
+        if (b[i] !== 0xff) { i++; continue; }
+        const m = b[i + 1];
+        if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { width: v.getUint16(i + 7), height: v.getUint16(i + 5) };
+        i += 2 + v.getUint16(i + 2);
+      }
+    }
+  } catch (_) { /* unreadable header */ }
+  return null;
+}
+
+// Store the picture as the note's image, unless the note already has images (shared files win).
+// Safe to run again: the source address is the attachment's original_file, unique per note.
+async function keepPicture(noteId: string, p: Picture) {
+  const [{ c }] = await sql`select count(*)::int as c from hopper.attachments where note_id = ${noteId}`;
+  if (c > 0) return false;
+  const path = `link/${noteId}/0.${IMAGE_TYPES[p.mime]}`;
+  const { error } = await storage.upload(path, p.bytes, { contentType: p.mime, upsert: true });
+  if (error) return false;
+  const size = pictureSize(p.bytes);
+  const rows = await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height)
+            values (${noteId}, ${p.source}, ${path}, ${p.mime}, ${size?.width ?? null}, ${size?.height ?? null})
+            on conflict (note_id, original_file) do nothing returning id`;
+  return rows.length > 0;
+}
+
+type PageMeta = { url: string; title?: string; text?: string; image?: string; ok: boolean; kind?: string; provider?: string; media_id?: string; picture?: Picture };
+async function pageMeta(url: string): Promise<PageMeta> {
+  const out: PageMeta = { url, ok: false };
   try {
     for (const [re, provider, endpoint] of OEMBED) {
       const m = url.match(re);
@@ -108,9 +179,16 @@ async function pageMeta(url: string) {
       }
     }
     const r = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(7000),
-      headers: { "user-agent": "Mozilla/5.0 (compatible; Hopper/1.0; personal notes app)", "accept-language": "en-GB,en;q=0.8" } });
+      headers: { "user-agent": UA, "accept-language": "en-GB,en;q=0.8" } });
     out.url = r.url || url;
     if (!r.ok) return out;
+    if ((r.headers.get("content-type") ?? "").toLowerCase().startsWith("image/")) {
+      // The link is the picture itself: keep it, and call the link fine even though there is no page.
+      out.picture = (await readPicture(r, out.url)) ?? undefined;
+      out.ok = Boolean(out.picture);
+      if (out.picture) out.image = out.url;
+      return out;
+    }
     const html = (await r.text()).slice(0, 400000);
     const meta = (k: string) => {
       const m = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${k}["'][^>]*content=["']([^"']*)["']`, "i"))
@@ -157,6 +235,19 @@ async function linkify(id: string) {
       summary = coalesce(summary, left(${m.text ?? null}::text, 220)),
       format = case when ${Boolean(fromBody || fromWhy)}::boolean then coalesce(format, 'bookmark') else format end
     where id = ${id}`;
+  // A picture behind the link becomes the note's own image. Best-effort: the bookmark stands either way.
+  let pic: Picture | null = m.picture ?? null;
+  if (!pic && m.image && pictureSite(url, m.url)) {
+    let src = m.image; try { src = new URL(m.image, m.url).href; } catch (_) { /* use as given */ }
+    pic = await fetchPicture(src, m.url);
+  }
+  if (pic && await keepPicture(id, pic)) {
+    // A link that was only ever the picture is an image note; the tagger and the design read look again with it.
+    await sql`update hopper.notes set
+        format = case when ${Boolean(m.picture)}::boolean and (format is null or format = 'bookmark') then 'image' else format end,
+        tagged_at = null
+      where id = ${id} and not is_locked`;
+  }
 }
 
 // Embed an app-captured note with the same recipe as hopper-embed (title, why saved, link, body),
