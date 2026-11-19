@@ -11,6 +11,7 @@ Live at <https://hopper-keith.vercel.app> (sign-in is limited to one email addre
 | `app/` | The PWA: plain HTML, CSS and JavaScript, no build step. Installable on Android, with a share target at `/share`. `/oauth/consent` is the OAuth consent page for MCP clients. |
 | `supabase/functions/` | Edge functions (Deno) for the Supabase project. |
 | `supabase/schema.sql` | Reference snapshot of the `hopper` schema. |
+| `tests/feed_check.py` | Feed smoke test: the real app against a fake API in headless Chrome. Checks cards never move, scrolling keeps loading on tall screens, and loading stops at the end. Run `python3 tests/feed_check.py` (needs Playwright and Chrome) before pushing feed or layout changes. |
 
 ### Edge functions
 
