@@ -12,7 +12,7 @@ const sb = createClient(SUPABASE_URL, PUBLISHABLE_KEY, {
 });
 
 const $ = (id) => document.getElementById(id);
-const state = { projects: [], project: null, topic: null, q: "", archived: false, oldest: null, loading: false, done: false, share: null, note: null, tagOptions: null };
+const state = { projects: [], project: null, topic: null, q: "", archived: false, bin: false, oldest: null, loading: false, done: false, share: null, note: null, tagOptions: null };
 
 // ---------- helpers ----------
 function el(tag, attrs = {}, ...kids) {
@@ -129,18 +129,31 @@ function openProjects() {
   $("projects-sheet").hidden = false;
 }
 
-function setArchived(on) {
-  state.archived = on;
-  $("view-banner").hidden = !on;
-  $("view-title").textContent = on ? "Archived" : "";
-  $("pills").hidden = on; $("subpills").hidden = on || !state.project;
+// Special views replace the feed: "archived" or "bin" (null for the normal feed).
+function setView(view) {
+  state.archived = view === "archived";
+  state.bin = view === "bin";
+  $("view-banner").hidden = !view;
+  $("view-title").textContent = view === "archived" ? "Archived" : view === "bin" ? "Bin" : "";
+  $("view-empty").hidden = view !== "bin";
+  $("pills").hidden = !!view; $("subpills").hidden = !!view || !state.project;
 }
-$("archived-btn").addEventListener("click", () => { $("menu").hidden = true; state.project = null; state.topic = null; state.q = ""; $("q").value = ""; setArchived(true); resetFeed(); });
-$("view-exit").addEventListener("click", () => { setArchived(false); renderPills(); resetFeed(); });
+function setArchived(on) { setView(on ? "archived" : null); }
+function openView(view) { $("menu").hidden = true; state.project = null; state.topic = null; state.q = ""; $("q").value = ""; setView(view); resetFeed(); }
+$("archived-btn").addEventListener("click", () => openView("archived"));
+$("bin-btn").addEventListener("click", () => openView("bin"));
+$("view-exit").addEventListener("click", () => { setView(null); renderPills(); resetFeed(); });
+$("view-empty").addEventListener("click", async () => {
+  if (!confirm("Erase everything in the Bin now? This can't be undone.")) return;
+  try { const { erased } = await api({ action: "empty_bin", all: true }); toast(`Erased ${erased} note${erased === 1 ? "" : "s"}`); resetFeed(); }
+  catch (e) { toast(e.message); }
+});
 
 // ---------- feed ----------
 function card(n) {
-  if (n.locked) return el("div", { class: "card locked", "data-id": n.id, onclick: () => openNote(n.id) }, "🔒 ", fmtDate(n.created_at), n.title ? el("div", {}, n.title) : null);
+  // Cards in the Bin say when they'll be erased.
+  const erase = n.erases_at ? el("div", { class: "c-erase" }, `Erased ${fmtDate(n.erases_at)}`) : null;
+  if (n.locked) return el("div", { class: "card locked", "data-id": n.id, onclick: () => openNote(n.id) }, "🔒 ", fmtDate(n.created_at), n.title ? el("div", {}, n.title) : null, erase);
   const projects = (n.projects || []).join(" · ");
   // Image cards lead with the picture and one line: the title, or else the note's first line.
   const line = n.title || (n.excerpt || "").split("\n").find((s) => s.trim()) || "";
@@ -159,7 +172,7 @@ function card(n) {
     el("img", { src: n.image, loading: "lazy", alt: "", onerror: (e) => { e.target.closest(".card")?.classList.remove("has-media"); e.target.parentNode.replaceWith(hover); } }), hover) : null;
   return el("div", { class: `card ${n.format || ""} ${colourClass(n.color)}${media ? " has-media" : ""}`, "data-id": n.id, onclick: () => openNote(n.id) },
     n.pinned ? (() => { const s = icon("pinned"); s.classList.add("pin-mark"); return s; })() : null,
-    media, text, media ? null : hover);
+    media, text, media ? null : hover, erase);
 }
 
 // ---------- masonry ----------
@@ -202,7 +215,7 @@ addEventListener("resize", () => {
 
 async function loadPinned() {
   const wrap = $("pinned-wrap");
-  if (state.q || state.archived) { wrap.hidden = true; return; }
+  if (state.q || state.archived || state.bin) { wrap.hidden = true; return; }
   try {
     const { notes } = await api({ action: "feed", pinned: true, project_id: state.project, topic: state.topic, limit: 40 });
     wrap.hidden = notes.length === 0;
@@ -221,7 +234,14 @@ async function loadMore() {
   if (state.loading || state.done) return;
   state.loading = true; $("more").textContent = "Loading…";
   try {
-    if (state.q) {
+    if (state.bin) {
+      // The Bin comes in one list (the API returns the 200 most recently binned).
+      const { notes, bin_days } = await api({ action: "bin" });
+      place($("feed"), notes.map(card));
+      $("status").textContent = !notes.length ? "The Bin is empty."
+        : `Notes in the Bin are erased ${bin_days} days after you delete them.${notes.length >= 200 ? " Showing the 200 most recent." : ""}`;
+      state.done = true;
+    } else if (state.q) {
       const { notes } = await api({ action: "search", q: state.q });
       place($("feed"), notes.map(card));
       $("status").textContent = notes.length ? `Closest matches for “${state.q}”` : `Nothing close to “${state.q}”`;
@@ -297,9 +317,10 @@ function cardFromNote(n) {
 function setEditorChrome(n) {
   const sheet = $("d-sheet");
   sheet.className = `sheet tall detail ${colourClass(n?.color)}`;
-  const locked = !n || n.locked;
+  // Binned notes are read-only until restored: the Bin banner holds their only actions.
+  const locked = !n || n.locked || !!n.deleted_at;
   for (const id of ["d-pin", "d-archive", "d-colour-btn", "d-format", "d-more"]) $(id).hidden = locked;
-  $("d-lock").hidden = !n || (n.locked && !(n.can_unlock ?? n.user_locked));
+  $("d-lock").hidden = !n || !!n.deleted_at || (n.locked && !(n.can_unlock ?? n.user_locked));
   if (!n) return;
   $("d-pin").replaceChildren(icon(n.pinned ? "pinned" : "pin"));
   $("d-pin").classList.toggle("on", !!n.pinned);
@@ -418,13 +439,15 @@ async function openNote(id, push = true) {
     const { note: n, related } = await api({ action: "note", id });
     state.note = n;
     setEditorChrome(n);
+    const binBar = n.deleted_at ? binBanner(n) : null;
     if (n.locked) {
       body.replaceChildren(...[
+        binBar,
         el("h1", {}, "🔒 ", n.title || "Locked note"),
-        el("p", { class: "muted" }, n.user_locked ? "You locked this note. Tap the lock below to unlock it."
+        n.deleted_at ? null : el("p", { class: "muted" }, n.user_locked ? "You locked this note. Tap the lock below to unlock it."
           : n.can_unlock ? `The safety check locked this note${n.lock_reason ? ` (${n.lock_reason})` : ""}. If that's wrong, tap the lock below to unlock it.`
           : "The safety check locked this note. It opens with your master password, which comes in a later build."),
-      ]);
+      ].filter(Boolean));
       return;
     }
     const title = el("textarea", { class: "quiet title", rows: 1, placeholder: "Title" });
@@ -435,10 +458,12 @@ async function openNote(id, push = true) {
     bodyBox.value = n.body || "";
     bodyBox.addEventListener("input", () => { autosize(bodyBox); queueSave({ body: bodyBox.value }); });
     const hasList = Array.isArray(n.list_items) && n.list_items.length;
+    if (n.deleted_at) { title.readOnly = true; bodyBox.readOnly = true; }
     body.replaceChildren(...[
+      binBar,
       n.images?.length ? el("div", { class: "d-images" }, n.images.filter((i) => i.url).map((i) => el("img", { src: i.url, alt: i.caption || "" }))) : null,
       title,
-      Object.assign(chipsFor(n), { id: "d-chips" }),
+      n.deleted_at ? null : Object.assign(chipsFor(n), { id: "d-chips" }),
       n.why_saved ? el("p", { class: "why-line" }, n.why_saved) : null,
       hasList ? el("ul", { class: "list-items" }, n.list_items.map((i) => el("li", {}, i.checked ? "☑ " : "☐ ", i.text))) : null,
       (!hasList || n.body) ? bodyBox : null,
@@ -564,12 +589,33 @@ $("d-copy-link").addEventListener("click", async () => {
   $("d-menu").hidden = true;
   try { await navigator.clipboard.writeText(`${location.origin}/n/${state.note.id}`); toast("Link copied"); } catch { toast("Couldn't copy the link"); }
 });
+// Delete moves the note to the Bin (no confirmation: it can be restored from the Bin for 7 days).
 $("d-delete").addEventListener("click", async () => {
   const n = state.note; $("d-menu").hidden = true;
-  if (!n || !confirm("Delete this note for good? This can't be undone.")) return;
-  try { pending = {}; await api({ action: "delete", id: n.id }); refreshCard(n.id, null); toast("Deleted"); $("detail-close").click(); }
-  catch (e) { toast(e.message); }
+  if (!n) return;
+  try {
+    await flushSave(); pending = {};
+    const { erases_at } = await api({ action: "delete", id: n.id });
+    refreshCard(n.id, null); toast(`Moved to the Bin. Erased ${fmtDate(erases_at)}.`); $("detail-close").click();
+  } catch (e) { toast(e.message); }
 });
+
+// The banner on a binned note: when it will be erased, Restore, and Delete forever.
+function binBanner(n) {
+  const restore = async () => {
+    try { await api({ action: "restore", id: n.id }); refreshCard(n.id, null); toast("Restored"); openNote(n.id, false); }
+    catch (e) { toast(e.message); }
+  };
+  const forever = async () => {
+    if (!confirm("Delete this note for good? This can't be undone.")) return;
+    try { await api({ action: "delete", id: n.id, forever: true }); refreshCard(n.id, null); toast("Deleted for good"); $("detail-close").click(); }
+    catch (e) { toast(e.message); }
+  };
+  return el("div", { class: "bin-banner" },
+    el("span", {}, `In the Bin. Erased ${fmtDate(n.erases_at)}.`),
+    el("button", { class: "primary", onclick: restore }, "Restore"),
+    el("button", { class: "danger", onclick: forever }, "Delete forever"));
+}
 
 function route() {
   const m = location.pathname.match(/^\/n\/([0-9a-f-]{36})$/);
