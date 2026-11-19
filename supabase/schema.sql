@@ -180,6 +180,7 @@ create table hopper.ui_events (
   at timestamp with time zone not null default now()
 );
 create index ui_events_at_idx on hopper.ui_events (at);
+alter table hopper.ui_events enable row level security;
 
 create table hopper.batches (
   id text not null primary key,
