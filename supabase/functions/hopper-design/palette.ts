@@ -5,7 +5,27 @@
 import { decode } from "https://deno.land/x/imagescript@1.3.0/mod.ts";
 
 export type Swatch = { hex: string; share: number };
-export type Measured = { width: number; height: number; palette: Swatch[]; lightness: number };
+export type Measured = { width: number; height: number; palette: Swatch[]; lightness: number | null; sampled: boolean };
+
+// Above this many pixels, decoding runs past the edge function's compute limit, so colours are not sampled.
+const MAX_PIXELS = 3_000_000;
+
+// Width and height from a JPEG's frame header, without decoding it. Null if not found.
+export function jpegSize(b: Uint8Array): { width: number; height: number } | null {
+  if (b[0] !== 0xff || b[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] !== 0xff) { i++; continue; }
+    const m = b[i + 1];
+    // SOF0-SOF15 carry the frame size, except DHT (C4), JPG (C8) and DAC (CC).
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+      return { height: (b[i + 5] << 8) | b[i + 6], width: (b[i + 7] << 8) | b[i + 8] };
+    }
+    if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue; }
+    i += 2 + ((b[i + 2] << 8) | b[i + 3]);
+  }
+  return null;
+}
 
 type Px = [number, number, number];
 
@@ -46,6 +66,8 @@ function medianCut(px: Px[], boxes: number): Px[][] {
 }
 
 export async function measure(bytes: Uint8Array): Promise<Measured> {
+  const size = jpegSize(bytes);
+  if (size && size.width * size.height > MAX_PIXELS) return { ...size, palette: [], lightness: null, sampled: false };
   const img: any = await decode(bytes);
   const width = img.width, height = img.height;
   const step = Math.max(1, Math.ceil(Math.max(width, height) / 160));
@@ -80,5 +102,5 @@ export async function measure(bytes: Uint8Array): Promise<Measured> {
   const lightness = Math.round(groups.reduce((a, g) => a + g.l[0] * g.n, 0) / total);
   const palette = groups.filter((g) => g.n / total >= 0.01).slice(0, 10)
     .map((g) => ({ hex: hex(g.c), share: Math.round((g.n / total) * 1000) / 10 }));
-  return { width, height, palette, lightness };
+  return { width, height, palette, lightness, sampled: true };
 }
