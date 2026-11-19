@@ -3,6 +3,8 @@
 -- migrations applied through the Supabase connector. Regenerate when the schema changes.
 -- Changes after this snapshot are in supabase/migrations/ (from 20261118214500_hopper_anchor_filing_v1:
 -- anchor columns on note_projects, tag_rejections, project cut-offs, scoring and filing functions).
+-- Also 20261119080000_hopper_design_sweep: settings.auto_design, hopper.design_sweep() and the
+-- hopper-design-sweep cron job (10, 30 and 50 past each hour).
 --
 -- Extensions used (in schema extensions): vector, pg_net, pg_cron.
 -- Grants: every table and view here has access revoked from public, anon and authenticated.

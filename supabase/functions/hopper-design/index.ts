@@ -9,6 +9,9 @@ import { measure } from "./palette.ts";
 // Hex values come from measured pixels (palette.ts); Claude names their roles and reads the rest.
 // Aesthetic tags are added to notes.aesthetics, and the note is re-embedded so search by aesthetic works.
 //
+// Default model Opus 5.5: in a side-by-side test (19 Nov) it read UI more usefully than Sonnet 5.5
+// and correctly marked a rulebook screenshot as not a reference. About $0.03 an image.
+//
 // Body (one of):
 //   { ids: [...], write?, redo?, model? }   images on up to 10 notes, by note id
 //   { next: n, write?, model? }             next n images (max 6) with no design read yet, newest first
@@ -213,12 +216,14 @@ Deno.serve(async (req: Request) => {
     const limit = ids ? 12 : Math.min(Number(body.next), 6);
 
     // Images come through notes_for_ai, which holds unlocked notes only, so locked notes never reach the model.
+    // Only notes the tagger has already cleared (tagged_at set) are read, so a new capture is never read
+    // before the sensitive check has had the chance to lock it.
     const atts = await sql`
       select a.id, a.note_id, a.storage_path, a.mime, n.title, n.why_saved, n.body,
         (select l.url from hopper.note_links l where l.note_id = n.id limit 1) as link_url,
         (select l.page_title from hopper.note_links l where l.note_id = n.id limit 1) as link_title
       from hopper.attachments a join hopper.notes_for_ai n on n.id = a.note_id
-      where a.storage_path is not null
+      where a.storage_path is not null and n.tagged_at is not null
         and (${ids}::uuid[] is null or a.note_id = any(${ids}::uuid[]))
         and (${redo}::boolean or a.design_read is null)
       order by n.created_at desc, a.id limit ${limit}`;
@@ -235,7 +240,7 @@ Deno.serve(async (req: Request) => {
     if (write) await refreshEmbeddings(results.filter((r) => r.write?.saved && r.read?.is_reference).map((r) => r.note_id), token);
 
     const [{ left }] = await sql`select count(*)::int as left from hopper.attachments a join hopper.notes_for_ai n on n.id = a.note_id
-                                 where a.storage_path is not null and a.design_read is null`;
+                                 where a.storage_path is not null and n.tagged_at is not null and a.design_read is null`;
     return json({ model, read: results.length, left, results });
   } catch (e) {
     return json({ error: String(e).slice(0, 300) }, 500);
