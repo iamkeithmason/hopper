@@ -19,7 +19,8 @@ Live at <https://hopper-keith.vercel.app> (sign-in is limited to one email addre
 | `hopper-api` | Everything the app calls: projects, feed, search by meaning, note detail, editing, tags, lock, capture, delete. |
 | `hopper-tag` | Tags notes with Claude (projects, topics, people, works, format) and locks notes the classifier calls sensitive. Reads unlocked notes only. |
 | `hopper-fetch` | Fetches page titles, text and thumbnails for links in notes. |
-| `hopper-embed` | Embeds notes with gte-small (384 dimensions) for search and related notes. |
+| `hopper-embed` | Embeds notes with gte-small (384 dimensions) for search and related notes; `refresh` re-embeds after a design read. |
+| `hopper-design` | Design teardown of stored images (HOP-20): measured palette plus Claude's read of type, layout, aesthetics and how to borrow from it, saved to `attachments.design_read`. Reads unlocked notes only. |
 | `hopper-import-wp` | One-off import of the *On the Ruin of Britain* WordPress posts as notes. |
 
 ## How it fits together
