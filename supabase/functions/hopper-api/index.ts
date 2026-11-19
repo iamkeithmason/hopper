@@ -5,7 +5,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 // Hopper's private API for the web app.
 // Every request must carry a Supabase Auth access token for the owner's email (hopper.settings 'owner_email').
 // Locked notes never return their body, summary or tags: only id, title, date and the lock.
-// POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin", ... }
+// POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin" | "event", ... }
 // "note" also returns the note's aesthetic tags and, for images judged design references, their design read.
 // Bin: "delete" moves a note to the Bin (deleted_at); the nightly hopper-bin job erases it after BIN_DAYS.
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
@@ -496,6 +496,16 @@ Deno.serve(async (req: Request) => {
         const [{ c }] = await sql`select count(*)::int as c from hopper.note_projects where note_id = ${n.id}`;
         const filed = await embedAndFile(n.id, c === 0);
         return json({ ok: true, filed });
+      }
+      case "event": {
+        // Silent navigation count (hopper.ui_events), for deciding where the project pills live.
+        const EVENTS = ["open", "pill", "sheet", "sheet_pick", "topic"];
+        if (!EVENTS.includes(b.event)) return json({ error: "bad event" }, 400);
+        const device = b.device === "phone" || b.device === "desktop" ? b.device : null;
+        const topic = typeof b.topic === "string" ? b.topic.slice(0, 80) : null;
+        await sql`insert into hopper.ui_events (event, project_id, topic, device)
+                  values (${b.event}, ${b.project_id ?? null}::uuid, ${topic}, ${device})`;
+        return json({ ok: true });
       }
       default:
         return json({ error: "unknown action" }, 400);

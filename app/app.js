@@ -77,6 +77,7 @@ async function boot() {
   show("home");
   try {
     await loadProjects();
+    track("open");
     route();
     if (state.share) { state.share.blobs = await sharedImages(state.share.images); openCapture(state.share); }
   } catch (e) { $("status").textContent = e.message; }
@@ -96,6 +97,11 @@ $("signin-form").addEventListener("submit", async (e) => {
 });
 
 // ---------- projects and pills ----------
+// Silent navigation count (hopper.ui_events): how often Keith switches project, to decide where the pills live.
+// Fire and forget: a failed count never interrupts the app.
+const device = () => (window.matchMedia("(max-width: 699px)").matches ? "phone" : "desktop");
+function track(event, extra = {}) { api({ action: "event", event, device: device(), ...extra }).catch(() => {}); }
+
 async function loadProjects() {
   const { projects } = await api({ action: "projects" });
   state.projects = projects;
@@ -104,7 +110,7 @@ async function loadProjects() {
 
 function renderPills() {
   const nav = $("pills"); nav.replaceChildren();
-  const pill = (label, id) => el("button", { class: state.project === id ? "on" : "", onclick: () => pickProject(id) }, label);
+  const pill = (label, id) => el("button", { class: state.project === id ? "on" : "", onclick: () => { track("pill", { project_id: id }); pickProject(id); } }, label);
   nav.append(pill("All", null), ...state.projects.map((p) => pill(p.name, p.id)), el("button", { onclick: openProjects }, "All projects →"));
 }
 
@@ -115,7 +121,7 @@ async function pickProject(id) {
   if (!id) { sub.hidden = true; } else {
     sub.hidden = false; sub.replaceChildren();
     const { topics } = await api({ action: "topics", project_id: id });
-    const tp = (label, name) => el("button", { class: state.topic === name ? "on" : "", onclick: () => { state.topic = name; pickTopic(); } }, label);
+    const tp = (label, name) => el("button", { class: state.topic === name ? "on" : "", onclick: () => { track("topic", { project_id: state.project, topic: name }); state.topic = name; pickTopic(); } }, label);
     sub.append(tp("All topics", null), ...topics.map((t) => tp(t.name, t.name)));
   }
   resetFeed();
@@ -123,9 +129,10 @@ async function pickProject(id) {
 function pickTopic() { for (const b of $("subpills").children) b.classList.toggle("on", b.textContent === (state.topic ?? "All topics")); resetFeed(); }
 
 function openProjects() {
+  track("sheet");
   $("menu").hidden = true;
   const g = $("projects-grid"); g.replaceChildren();
-  for (const p of state.projects) g.append(el("button", { onclick: () => { closeOverlay("projects-sheet"); setArchived(false); pickProject(p.id); } }, el("b", {}, p.name), el("span", { class: "muted" }, `${p.notes} notes · ${fmtDate(p.last_activity)}`)));
+  for (const p of state.projects) g.append(el("button", { onclick: () => { track("sheet_pick", { project_id: p.id }); closeOverlay("projects-sheet"); setArchived(false); pickProject(p.id); } }, el("b", {}, p.name), el("span", { class: "muted" }, `${p.notes} notes · ${fmtDate(p.last_activity)}`)));
   $("projects-sheet").hidden = false;
 }
 
@@ -792,3 +799,6 @@ for (const b of document.querySelectorAll("[data-close]")) b.addEventListener("c
 function closeOverlay(id) { $(id).hidden = true; }
 
 boot();
+
+// Coming back to the app (switching from another app or tab) counts as an open too.
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && booted) track("open"); });

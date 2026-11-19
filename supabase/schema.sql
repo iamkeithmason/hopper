@@ -170,6 +170,17 @@ create table hopper.corrections (
   at timestamp with time zone not null default now()
 );
 
+-- Navigation taps in the app (open, pill, sheet, sheet_pick, topic), counted silently.
+create table hopper.ui_events (
+  id bigint generated always as identity primary key,
+  event text not null check (event in ('open', 'pill', 'sheet', 'sheet_pick', 'topic')),
+  project_id uuid references hopper.projects(id) on delete set null,
+  topic text,
+  device text check (device in ('phone', 'desktop')),
+  at timestamp with time zone not null default now()
+);
+create index ui_events_at_idx on hopper.ui_events (at);
+
 create table hopper.batches (
   id text not null primary key,
   model text not null,
