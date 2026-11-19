@@ -9,6 +9,7 @@ Live at <https://hopper-keith.vercel.app> (sign-in is limited to one email addre
 | Folder | What it is |
 |---|---|
 | `app/` | The PWA: plain HTML, CSS and JavaScript, no build step. Installable on Android, with a share target at `/share`. `/oauth/consent` is the OAuth consent page for MCP clients. |
+| `extension/` | Chrome/Brave extension (HOP-8): save pages, images, quotes and screenshots. Load unpacked; see its README. |
 | `supabase/functions/` | Edge functions (Deno) for the Supabase project. |
 | `supabase/schema.sql` | Reference snapshot of the `hopper` schema. |
 | `tests/feed_check.py` | Feed smoke test: the real app against a fake API in headless Chrome. Checks cards never move, scrolling keeps loading on tall screens, and loading stops at the end. Run `python3 tests/feed_check.py` (needs Playwright and Chrome) before pushing feed or layout changes. |
@@ -24,6 +25,7 @@ Live at <https://hopper-keith.vercel.app> (sign-in is limited to one email addre
 | `hopper-embed` | Embeds notes with gte-small (384 dimensions) for search and related notes; `refresh` re-embeds after a design read. |
 | `hopper-design` | Design teardown of stored images (HOP-20): measured palette plus Claude's read of type, layout, aesthetics and how to borrow from it, saved to `attachments.design_read`. Aesthetic tags come from the shared vocabulary in `hopper.aesthetics`. Reads unlocked notes only. |
 | `hopper-mcp` | Read-only MCP server (HOP-18) so Claude can search Hopper and its design references from any chat: `search_references`, `get_reference` (with the image), `list_aesthetics`, `search_notes`, `get_note`, `list_projects`. Bearer token from Vault (`hopper_mcp_token`). |
+| `hopper-clip` | Gateway for the browser extension: checks the capture-only token (Vault `hopper_capture_token`) and passes captures to `hopper-api`. It can save but never read. |
 | `hopper-import-wp` | One-off import of the *On the Ruin of Britain* WordPress posts as notes. |
 
 ## How it fits together

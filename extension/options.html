@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<title>Hopper extension options</title>
+<link rel="stylesheet" href="ui.css">
+</head>
+<body class="options">
+<header><img src="icons/48.png" alt="" width="32" height="32"><h1>Hopper</h1></header>
+
+<section>
+  <h2>Capture token</h2>
+  <p class="muted">Copy it from your Supabase dashboard: Vault, secret <code>hopper_capture_token</code>. It can only save to Hopper, never read from it. It stays in this browser.</p>
+  <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the token">
+  <div class="actions">
+    <button id="save" class="primary" type="button">Save and test</button>
+  </div>
+  <p id="status" class="status"></p>
+</section>
+
+<section>
+  <h2>Save button on images</h2>
+  <label class="check"><input id="hover" type="checkbox"> Show a Save button when I hover over a large image</label>
+  <p class="muted">Applies to pages opened after you change it.</p>
+</section>
+
+<section>
+  <h2>Ways to save</h2>
+  <ul class="muted">
+    <li>Toolbar button or <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd>: the page, with a note, any selected text, and an optional screenshot.</li>
+    <li>Right-click: save the page, an image, a link, selected text as a quote, or a screenshot of the view.</li>
+    <li>Hover over an image: the Save button.</li>
+  </ul>
+</section>
+<script src="options.js"></script>
+</body>
+</html>

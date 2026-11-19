@@ -34,6 +34,8 @@ header#top { position: sticky; top: 0; z-index: 10; background: var(--bg); paddi
 header#top.hide { transform: translateY(-100%); }
 .bar { display: flex; gap: 6px; align-items: center; }
 #search-form { flex: 1; }
+/* Wide screens: search sits at a comfortable width and widens while you use it. */
+@media (min-width: 700px) { #search-form { flex: 0 1 560px; transition: flex-basis .2s ease; } #search-form:focus-within { flex-basis: 900px; } }
 #q { border-radius: 22px; padding: 10px 16px; background: var(--card); }
 .icon-btn { width: 40px; height: 40px; border-radius: 20px; font-size: 20px; color: var(--mid); flex: none; }
 .icon-btn:hover { background: var(--chip); }

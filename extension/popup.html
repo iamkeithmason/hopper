@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+</head>
+<body class="popup">
+<header><img src="icons/32.png" alt="" width="20" height="20"><strong>Save to Hopper</strong></header>
+<p id="page" class="page"></p>
+<label for="note">Why are you saving it?</label>
+<textarea id="note" rows="3" placeholder="Optional: what caught your eye. It helps the design read."></textarea>
+<p id="sel" class="sel" hidden></p>
+<label class="check"><input id="lock" type="checkbox"> Lock (never shown to AI)</label>
+<div class="actions">
+  <button id="save" class="primary" type="button">Save page</button>
+  <button id="shot" type="button" title="Saves the page with a picture of what's on screen">With screenshot</button>
+</div>
+<p id="status" class="status"></p>
+<script src="popup.js"></script>
+</body>
+</html>
