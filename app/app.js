@@ -156,8 +156,8 @@ function card(n) {
     projects ? el("b", {}, projects) : null,
     el("span", {}, fmtDate(n.created_at)));
   const media = n.image ? el("div", { class: "c-media" },
-    el("img", { src: n.image, loading: "lazy", alt: "", onerror: (e) => e.target.parentNode.replaceWith(hover) }), hover) : null;
-  return el("div", { class: `card ${n.format || ""} ${colourClass(n.color)}`, "data-id": n.id, onclick: () => openNote(n.id) },
+    el("img", { src: n.image, loading: "lazy", alt: "", onerror: (e) => { e.target.closest(".card")?.classList.remove("has-media"); e.target.parentNode.replaceWith(hover); } }), hover) : null;
+  return el("div", { class: `card ${n.format || ""} ${colourClass(n.color)}${media ? " has-media" : ""}`, "data-id": n.id, onclick: () => openNote(n.id) },
     n.pinned ? (() => { const s = icon("pinned"); s.classList.add("pin-mark"); return s; })() : null,
     media, text, media ? null : hover);
 }
@@ -166,7 +166,8 @@ function card(n) {
 // Each card goes into the shortest column once and never moves. (CSS columns re-flowed the whole board whenever a
 // batch loaded or an image arrived, so cards jumped between columns while scrolling.) data-seq keeps the
 // newest-first order, so a resize that changes the column count can lay the cards out again.
-const colCount = () => (innerWidth >= 1300 ? 5 : innerWidth >= 1000 ? 4 : innerWidth >= 700 ? 3 : 2);
+// Full width: as many ~230px columns as fit (2 at least, on phones).
+const colCount = () => Math.max(2, Math.floor((document.documentElement.clientWidth - 16) / 230));
 function layout(box, cards = []) {
   const n = colCount();
   box.dataset.cols = n; box.seq = 0;
