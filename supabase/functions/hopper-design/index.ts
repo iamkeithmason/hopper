@@ -21,7 +21,7 @@ import { measure } from "./palette.ts";
 // Guarded by the hashed invoke token. The API key comes from the HOPPER_API secret.
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 3 });
-const READ_VERSION = 2;
+const READ_VERSION = 3;
 const IMAGE_BUCKET = "hopper-images";
 const MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
 const DEFAULT_MODEL = "claude-opus-5-5";
@@ -73,7 +73,7 @@ const buildTool = (vocab: string[]) => ({
     mood: strs("Three or four mood words.", 4),
     era: str("The period or movement it evokes, if any; empty otherwise."),
     good_reference_for: strs("Concrete uses: 'onboarding screens', 'a literary magazine masthead', 'dense settings pages'.", 5),
-    how_to_borrow: str("Two to four concrete moves a designer could reuse in another project, then one line on what not to copy (marks, distinctive identity, anything that would read as imitation)."),
+    how_to_borrow: str("Three to five transferable moves, each with why it works. Use the palette names. No warnings about what not to copy (see the system prompt)."),
     confidence: { type: "string", enum: ["high", "medium", "low"] },
   }),
 });
@@ -95,7 +95,13 @@ AESTHETICS: choose two to five tags, only from this vocabulary, mixing groups wh
 ${vocab.map((v) => `- ${v.name} (${v.grp}): ${v.description}`).join("\n")}
 Use the mood and era fields for nuance the vocabulary doesn't capture.
 
-HOW TO BORROW: write it as advice to a designer starting a different project: the transferable moves (proportions, spacing, colour ratios, type pairings, component patterns), not a description of the image. End with what not to copy.
+HOW TO BORROW: write it as advice to a designer starting a different project: the transferable moves (proportions, spacing, colour ratios, type pairings, component patterns), not a description of the image.
+- Lead with the mechanism that makes the style work, when there is one: how the effect is produced, not just its ingredients. For example, in a neon or synthwave interface the foreground elements are the light sources, and their glow spills onto a dark, never pure-black ground.
+- Give the why for each move: the effect it creates or the problem it solves. "Raise body text contrast" is not enough; say that the grey body text falls short of WCAG AA on that background, so lift it.
+- Refer to colours by the names you gave them in the palette ("hot pink", "ink black"), so the advice and the swatches line up.
+- When you mention type, give its weight and contrast as well as its class: "a heavy slab serif", "a light, high-contrast serif".
+- Leave out advice that would apply to almost any design. A move earns its place by being what makes this example work.
+- Write in a "yes, and" spirit: what to take and build on. Do not tell the owner what not to copy or warn about imitation; they draw from references deliberately, sometimes as practice studies. If a motif is a well-worn trope of the style, you may note it as context ("the sun over wireframe mountains is the genre's most familiar motif") and leave the choice to them.
 
 CONTEXT: the owner's title, reason for saving, and link may follow. Use them to understand intent; the "why saved" line matters most.
 
@@ -168,6 +174,9 @@ async function readOne(a: any, model: string, key: string, ctx: Ctx) {
   const measuredHex = new Set(m.palette.map((p) => p.hex.toLowerCase()));
   read.palette = (read.palette ?? []).filter((p: any) => measuredHex.has(String(p.hex).toLowerCase()));
   read.palette = read.palette.slice(0, 8);
+  // Store the measured share with each colour, so the app can draw the palette in proportion.
+  const shareOf = new Map(m.palette.map((p) => [p.hex.toLowerCase(), p.share]));
+  read.palette = read.palette.map((p: any) => ({ ...p, share: shareOf.get(String(p.hex).toLowerCase()) ?? null }));
   read.aesthetics = (read.aesthetics ?? []).map((t: string) => String(t).toLowerCase().trim()).filter(Boolean).slice(0, 5);
   for (const [k, n] of [["components", 8], ["techniques", 6], ["mood", 4], ["good_reference_for", 5]] as const) read[k] = (read[k] ?? []).slice(0, n);
   if (read.typography) {
