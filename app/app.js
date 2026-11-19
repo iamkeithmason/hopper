@@ -12,7 +12,7 @@ const sb = createClient(SUPABASE_URL, PUBLISHABLE_KEY, {
 });
 
 const $ = (id) => document.getElementById(id);
-const state = { projects: [], project: null, topic: null, q: "", archived: false, bin: false, oldest: null, loading: false, done: false, share: null, note: null, tagOptions: null };
+const state = { projects: [], project: null, topic: null, q: "", archived: false, bin: false, binOffset: 0, oldest: null, loading: false, done: false, share: null, note: null, tagOptions: null };
 
 // ---------- helpers ----------
 function el(tag, attrs = {}, ...kids) {
@@ -224,7 +224,7 @@ async function loadPinned() {
 }
 
 function resetFeed() {
-  state.oldest = null; state.done = false; layout($("feed")); $("status").textContent = "";
+  state.oldest = null; state.binOffset = 0; state.done = false; layout($("feed")); $("status").textContent = "";
   window.scrollTo({ top: 0 });
   loadPinned();
   loadMore();
@@ -235,12 +235,13 @@ async function loadMore() {
   state.loading = true; $("more").textContent = "Loading…";
   try {
     if (state.bin) {
-      // The Bin comes in one list (the API returns the 200 most recently binned).
-      const { notes, bin_days } = await api({ action: "bin" });
+      // The Bin loads in pages as you scroll, like the feed.
+      const { notes, bin_days, total } = await api({ action: "bin", offset: state.binOffset, limit: 60 });
       place($("feed"), notes.map(card));
-      $("status").textContent = !notes.length ? "The Bin is empty."
-        : `Notes in the Bin are erased ${bin_days} days after you delete them.${notes.length >= 200 ? " Showing the 200 most recent." : ""}`;
-      state.done = true;
+      state.binOffset += notes.length;
+      if (notes.length < 60) state.done = true;
+      $("status").textContent = !total ? "The Bin is empty."
+        : `${total} note${total === 1 ? "" : "s"} in the Bin. Notes are erased ${bin_days} days after you delete them.`;
     } else if (state.q) {
       const { notes } = await api({ action: "search", q: state.q });
       place($("feed"), notes.map(card));
@@ -399,6 +400,45 @@ const VIDEO = [
   [/^https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/)|youtu\.be\/)([\w-]{11})/i, (id) => `https://www.youtube-nocookie.com/embed/${id}`],
   [/^https?:\/\/(?:www\.)?vimeo\.com\/(\d+)/i, (id) => `https://player.vimeo.com/video/${id}`],
 ];
+// Design notes (HOP-20): the design read of images judged design references. Palette swatches (tap to copy the hex),
+// the note's aesthetic tags and "how to borrow this" up front; type, layout and techniques folded away.
+const HEX = /^#[0-9a-f]{6}$/i;
+async function copyHex(hex) {
+  try { await navigator.clipboard.writeText(hex); toast(`Copied ${hex}`); } catch { toast(hex); }
+}
+function designNotes(n) {
+  const reads = (n.images || []).map((i) => i.design).filter(Boolean);
+  if (!reads.length) return null;
+  const row = (label, value) => {
+    const v = Array.isArray(value) ? value.filter(Boolean).join(", ") : value;
+    return v ? el("div", { class: "dn-row" }, el("dt", {}, label), el("dd", {}, v)) : null;
+  };
+  return el("section", { class: "design-notes" },
+    el("h3", {}, "Design notes"),
+    n.aesthetics?.length ? el("div", { class: "chips" }, n.aesthetics.map((a) => el("span", { class: "chip" }, a))) : null,
+    reads.map((d, i) => el("div", { class: "dn-read" },
+      reads.length > 1 ? el("p", { class: "dn-label" }, `Image ${i + 1}`) : null,
+      d.summary ? el("p", { class: "dn-summary" }, d.summary) : null,
+      d.palette.length ? el("div", { class: "swatches" }, d.palette.filter((p) => HEX.test(p.hex)).map((p) =>
+        el("button", { type: "button", class: "swatch-chip", title: `Copy ${p.hex}`, onclick: () => copyHex(p.hex) },
+          el("span", { class: "sw", style: `background:${p.hex}` }),
+          el("span", { class: "sw-text" }, el("b", {}, p.name || p.role), el("small", {}, `${p.hex} · ${p.role}`))))) : null,
+      d.borrow ? el("div", { class: "borrow" }, el("p", { class: "borrow-k" }, "How to borrow this"), el("p", {}, d.borrow)) : null,
+      el("details", { class: "dn-more" },
+        el("summary", {}, "Type, layout and techniques"),
+        el("dl", {},
+          row("Type", [d.type.join(", "), d.families.length ? `possibly ${d.families.join(", ")}` : null]),
+          row("Hierarchy", d.type_notes),
+          row("Layout", d.layout),
+          row("Density", d.density && d.density !== "n/a" ? d.density : null),
+          row("Colour", d.colour_notes),
+          row("Components", d.components),
+          row("Techniques", d.techniques),
+          row("Mood", [d.mood.join(", "), d.era]),
+          row("Good for", d.good_for),
+          row("Kind", d.kind))))));
+}
+
 function fromPage(n) {
   const l = n.links?.[0];
   if (!l) return null;
@@ -462,6 +502,7 @@ async function openNote(id, push = true) {
     body.replaceChildren(...[
       binBar,
       n.images?.length ? el("div", { class: "d-images" }, n.images.filter((i) => i.url).map((i) => el("img", { src: i.url, alt: i.caption || "" }))) : null,
+      designNotes(n),
       title,
       n.deleted_at ? null : Object.assign(chipsFor(n), { id: "d-chips" }),
       n.why_saved ? el("p", { class: "why-line" }, n.why_saved) : null,
@@ -600,15 +641,21 @@ $("d-delete").addEventListener("click", async () => {
   } catch (e) { toast(e.message); }
 });
 
+// A note leaving the Bin view: drop its card, and step the page offset back so the next page doesn't skip one.
+function leaveBin(id) {
+  if (state.bin && document.querySelector(`#feed .card[data-id="${id}"]`)) state.binOffset = Math.max(0, state.binOffset - 1);
+  refreshCard(id, null);
+}
+
 // The banner on a binned note: when it will be erased, Restore, and Delete forever.
 function binBanner(n) {
   const restore = async () => {
-    try { await api({ action: "restore", id: n.id }); refreshCard(n.id, null); toast("Restored"); openNote(n.id, false); }
+    try { await api({ action: "restore", id: n.id }); leaveBin(n.id); toast("Restored"); openNote(n.id, false); }
     catch (e) { toast(e.message); }
   };
   const forever = async () => {
     if (!confirm("Delete this note for good? This can't be undone.")) return;
-    try { await api({ action: "delete", id: n.id, forever: true }); refreshCard(n.id, null); toast("Deleted for good"); $("detail-close").click(); }
+    try { await api({ action: "delete", id: n.id, forever: true }); leaveBin(n.id); toast("Deleted for good"); $("detail-close").click(); }
     catch (e) { toast(e.message); }
   };
   return el("div", { class: "bin-banner" },

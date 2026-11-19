@@ -6,6 +6,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 // Every request must carry a Supabase Auth access token for the owner's email (hopper.settings 'owner_email').
 // Locked notes never return their body, summary or tags: only id, title, date and the lock.
 // POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin", ... }
+// "note" also returns the note's aesthetic tags and, for images judged design references, their design read.
 // Bin: "delete" moves a note to the Bin (deleted_at); the nightly hopper-bin job erases it after BIN_DAYS.
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
 
@@ -200,6 +201,18 @@ async function cards(rows: any[]) {
   });
 }
 
+// The design read (from hopper-design) as the note page shows it: only for images judged design references.
+function designFor(d: any) {
+  if (!d?.is_reference) return null;
+  return {
+    kind: d.kind, summary: d.summary, palette: d.palette ?? [], colour_notes: d.colour_notes || null,
+    type: d.typography?.classification ?? [], families: (d.typography?.likely_families ?? []).map((f: any) => f.name),
+    type_notes: d.typography?.hierarchy || null, layout: d.layout?.structure || null, density: d.density,
+    components: d.components ?? [], techniques: d.techniques ?? [], mood: d.mood ?? [], era: d.era || null,
+    good_for: d.good_reference_for ?? [], borrow: d.how_to_borrow || null,
+  };
+}
+
 async function embed(text: string) {
   const v = await session.run(text, { mean_pool: true, normalize: true });
   return `[${Array.from(v as number[]).join(",")}]`;
@@ -249,9 +262,14 @@ Deno.serve(async (req: Request) => {
         return json({ notes: await cards(rows) });
       }
       case "bin": {
-        // Most recently binned first. Includes locked notes (title and lock only).
-        const rows = await sql`select n.* from hopper.note_cards n where n.deleted_at is not null order by n.deleted_at desc limit 200`;
-        return json({ notes: await cards(rows), bin_days: BIN_DAYS });
+        // Most recently binned first, in pages ({ offset, limit }). Includes locked notes (title and lock only).
+        // Paged by offset, not by date: a bulk clear-out bins many notes with the same deleted_at.
+        const limit = Math.min(Number(b.limit ?? 60), 100);
+        const offset = Math.max(Number(b.offset ?? 0), 0);
+        const rows = await sql`select n.* from hopper.note_cards n where n.deleted_at is not null
+                               order by n.deleted_at desc, n.id limit ${limit} offset ${offset}`;
+        const [{ total }] = await sql`select count(*)::int as total from hopper.notes where deleted_at is not null`;
+        return json({ notes: await cards(rows), bin_days: BIN_DAYS, total });
       }
       case "search": {
         const q = String(b.q ?? "").trim();
@@ -285,7 +303,7 @@ Deno.serve(async (req: Request) => {
           union all select 'person', p.name, np.confidence, np.confirmed, null, null from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = ${n.id}
           union all select 'work', w.title, nw.confidence, null, null, null from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = ${n.id}`;
         const links = await sql`select url, page_title, page_text, thumbnail_url from hopper.note_links where note_id = ${n.id}`;
-        const atts = await sql`select storage_path, caption from hopper.attachments where note_id = ${n.id}`;
+        const atts = await sql`select storage_path, caption, design_read from hopper.attachments where note_id = ${n.id} order by id`;
         const urls = await signed(atts.map((a: any) => a.storage_path));
         const related = await sql`
           select n.*, 1 - (e2.embedding <=> e1.embedding) as score
@@ -298,7 +316,8 @@ Deno.serve(async (req: Request) => {
             id: n.id, locked: false, title: n.title, body: n.body, summary: n.summary, format: n.format,
             list_items: n.list_items, why_saved: n.why_saved, created_at: n.created_at, source: n.source,
             pinned: n.pinned, archived: n.archived, color: n.keep_color, edited_at: n.edited_at, ...bin,
-            tags, links, images: atts.map((a: any) => ({ url: urls[a.storage_path] ?? null, caption: a.caption })),
+            aesthetics: n.aesthetics ?? [],
+            tags, links, images: atts.map((a: any) => ({ url: urls[a.storage_path] ?? null, caption: a.caption, design: designFor(a.design_read) })),
           },
           related: await cards(related),
         });
