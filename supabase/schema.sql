@@ -5,6 +5,7 @@
 -- anchor columns on note_projects, tag_rejections, project cut-offs, scoring and filing functions).
 -- Also 20261119080000_hopper_design_sweep: settings.auto_design, hopper.design_sweep() and the
 -- hopper-design-sweep cron job (10, 30 and 50 past each hour; two images a run since 20261119083000).
+-- 20261119110000_hopper_capture_token (settings.capture_token_sha256; token in Vault).
 -- And 20261119090000_hopper_aesthetic_vocabulary (hopper.aesthetics, hopper.aesthetic_aliases,
 -- hopper.canonical_aesthetics) and 20261119093000_hopper_mcp_token (settings.mcp_token_sha256; token in Vault).
 --
