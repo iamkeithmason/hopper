@@ -15,13 +15,14 @@ import { measure } from "./palette.ts";
 //
 // Body (one of):
 //   { ids: [...], write?, redo?, model? }   up to 2 images on up to 10 notes, by note id
-//   { next: n, write?, model? }             next n images (max 2) with no design read yet, newest first
+//   { next: n, write?, model?, stale? }     next n images (max 2) with no design read yet, newest first;
+//                                           with stale, also reference reads from an older READ_VERSION
 // Two images a call, one after another: decoding more ran past the edge function's compute limit.
 // write defaults to false (dry run: returns the reads without saving). redo re-reads images already read.
 // Guarded by the hashed invoke token. The API key comes from the HOPPER_API secret.
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 3 });
-const READ_VERSION = 3;
+const READ_VERSION = 4;
 const IMAGE_BUCKET = "hopper-images";
 const MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
 const DEFAULT_MODEL = "claude-opus-5-5";
@@ -87,7 +88,7 @@ IS IT A REFERENCE? True for interfaces, websites, brand and identity work, logos
 
 PALETTE: a measured palette follows the image, as hex values with the share of the image each covers. Choose palette colours ONLY from that list, copying hex values exactly, and give each a role. Large shares are usually background or surface; a small saturated share is often the accent. Use role "imagery" for colours that come from photographs inside the design rather than from the design system. Skip measured colours that are only JPEG noise or anti-aliasing.
 
-KIND: use "game-layout" for tabletop and RPG rulebook pages, game manuals and zines judged as layout references, so they can be searched apart from editorial design. A close-up of a single rules table kept for its rules is not a reference.
+KIND: a page kept for its overall layout (an article, a blog post, a magazine spread) is "editorial" even when an illustration or photograph dominates it; the owner saved the page, so read how the image works within it. Use "illustration" or "photography" only when the image fills the whole frame. Use "game-layout" for tabletop and RPG rulebook pages, game manuals and zines judged as layout references, so they can be searched apart from editorial design. A close-up of a single rules table kept for its rules is not a reference.
 
 TYPOGRAPHY: classify what you see. Name a typeface family only when you genuinely recognise it, with an honest confidence; a wrong name is worse than none.
 
@@ -172,7 +173,14 @@ async function readOne(a: any, model: string, key: string, ctx: Ctx) {
 
   // Keep only palette entries whose hex came from the measurement.
   const measuredHex = new Set(m.palette.map((p) => p.hex.toLowerCase()));
-  read.palette = (read.palette ?? []).filter((p: any) => measuredHex.has(String(p.hex).toLowerCase()));
+  // and one entry per hex (the model sometimes names one measured colour twice).
+  const seen = new Set<string>();
+  read.palette = (read.palette ?? []).filter((p: any) => {
+    const h = String(p.hex).toLowerCase();
+    if (!measuredHex.has(h) || seen.has(h)) return false;
+    seen.add(h);
+    return true;
+  });
   read.palette = read.palette.slice(0, 8);
   // Store the measured share with each colour, so the app can draw the palette in proportion.
   const shareOf = new Map(m.palette.map((p) => [p.hex.toLowerCase(), p.share]));
@@ -228,7 +236,7 @@ Deno.serve(async (req: Request) => {
     if (!key) return new Response("HOPPER_API secret missing", { status: 500 });
     const model = body.model ?? DEFAULT_MODEL;
     if (!MODELS.includes(model)) return new Response("unknown model", { status: 400 });
-    const write = body.write === true, redo = body.redo === true;
+    const write = body.write === true, redo = body.redo === true, stale = body.stale === true && !body.ids;
 
     const ids: string[] | null = Array.isArray(body.ids) ? body.ids : null;
     if (ids && ids.length > 10) return new Response("send up to 10 ids", { status: 400 });
@@ -245,7 +253,9 @@ Deno.serve(async (req: Request) => {
       from hopper.attachments a join hopper.notes_for_ai n on n.id = a.note_id
       where a.storage_path is not null and n.tagged_at is not null
         and (${ids}::uuid[] is null or a.note_id = any(${ids}::uuid[]))
-        and (${redo}::boolean or a.design_read is null)
+        and (${redo}::boolean or a.design_read is null
+             or (${stale}::boolean and (a.design_read->>'is_reference')::boolean
+                 and coalesce((a.design_read->>'v')::int, 0) < ${READ_VERSION}))
       order by n.created_at desc, a.id limit ${limit}`;
 
     const vocab = await sql`select name, grp, description from hopper.aesthetics order by grp, name` as any[];
@@ -261,7 +271,9 @@ Deno.serve(async (req: Request) => {
     if (write) await refreshEmbeddings(results.filter((r) => r.write?.saved && r.read?.is_reference).map((r) => r.note_id), token);
 
     const [{ left }] = await sql`select count(*)::int as left from hopper.attachments a join hopper.notes_for_ai n on n.id = a.note_id
-                                 where a.storage_path is not null and n.tagged_at is not null and a.design_read is null`;
+                                 where a.storage_path is not null and n.tagged_at is not null
+                                   and (a.design_read is null or (${stale}::boolean and (a.design_read->>'is_reference')::boolean
+                                        and coalesce((a.design_read->>'v')::int, 0) < ${READ_VERSION}))`;
     return json({ model, read: results.length, left, results });
   } catch (e) {
     return json({ error: String(e).slice(0, 300) }, 500);
