@@ -53,7 +53,7 @@
     <nav id="subpills" class="pills sub" aria-label="Topics" hidden></nav>
   </header>
   <main>
-    <div id="view-banner" class="view-banner" hidden><span id="view-title"></span><button id="view-exit">Back to notes</button></div>
+    <div id="view-banner" class="view-banner" hidden><span id="view-title"></span><span class="view-actions"><button id="view-empty" class="danger" hidden>Empty Bin</button><button id="view-exit">Back to notes</button></span></div>
     <p id="status" class="muted center"></p>
     <div id="pinned-wrap" hidden><h4 class="section-label">Pinned</h4><div id="pinned" class="feed"></div><h4 class="section-label">Others</h4></div>
     <div id="feed" class="feed"></div>
@@ -62,6 +62,7 @@
   <div id="menu" class="menu" hidden>
     <button id="all-projects-btn">All projects</button>
     <button id="archived-btn">Archived</button>
+    <button id="bin-btn">Bin</button>
     <button id="signout-btn">Sign out</button>
   </div>
 </section>
@@ -95,7 +96,7 @@
     <div id="d-menu" class="pop menu-pop" hidden>
       <button id="d-open-link">Open original link</button>
       <button id="d-copy-link">Copy link to this note</button>
-      <button id="d-delete" class="danger">Delete note</button>
+      <button id="d-delete" class="danger">Move to Bin</button>
     </div>
   </article>
 </section>
