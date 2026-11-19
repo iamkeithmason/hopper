@@ -3,7 +3,7 @@ import postgres from "npm:postgres@3.4.4";
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { measure } from "./palette.ts";
 
-// Hopper design teardown (HOP-20), version 1.
+// Hopper design teardown (HOP-20), version 2: aesthetic tags come from the shared vocabulary (hopper.aesthetics).
 // Reads stored images on UNLOCKED notes (through notes_for_ai) and writes a design read to
 // attachments.design_read: palette with roles, type, layout, density, components, techniques,
 // aesthetic tags, what it is a good reference for, and how to borrow from it.
@@ -21,7 +21,7 @@ import { measure } from "./palette.ts";
 // Guarded by the hashed invoke token. The API key comes from the HOPPER_API secret.
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 3 });
-const READ_VERSION = 1;
+const READ_VERSION = 2;
 const IMAGE_BUCKET = "hopper-images";
 const MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
 const DEFAULT_MODEL = "claude-opus-5-5";
@@ -41,7 +41,8 @@ const KINDS = ["app-ui", "web-ui", "dashboard", "brand-identity", "logo", "poste
   "typography", "illustration", "photography", "product", "interior", "data-viz", "other"];
 const ROLES = ["background", "surface", "text", "accent", "brand", "secondary", "imagery"];
 
-const TOOL = {
+// The tool schema is built per request: aesthetics must come from the shared vocabulary (hopper.aesthetics).
+const buildTool = (vocab: string[]) => ({
   name: "record_design_read",
   description: "Record the design read for one image.",
   strict: true,
@@ -67,16 +68,18 @@ const TOOL = {
     density: { type: "string", enum: ["airy", "balanced", "dense", "n/a"] },
     components: strs("UI or graphic components visible, e.g. 'pill tabs', 'stat cards', 'sticky header'. Empty for non-UI."),
     techniques: strs("Notable design moves worth remembering, e.g. 'oversized numerals as decoration', 'duotone photography'.", 6),
-    aesthetics: strs("Two to five short lowercase aesthetic tags, e.g. 'swiss modernism', 'warm editorial', 'neo-brutalist'. Empty if not a reference.", 5),
+    aesthetics: { type: "array", items: { type: "string", enum: vocab },
+      description: "Two to five tags from the aesthetic vocabulary in the system prompt. Empty if not a reference. At most 5." },
     mood: strs("Three or four mood words.", 4),
     era: str("The period or movement it evokes, if any; empty otherwise."),
     good_reference_for: strs("Concrete uses: 'onboarding screens', 'a literary magazine masthead', 'dense settings pages'.", 5),
     how_to_borrow: str("Two to four concrete moves a designer could reuse in another project, then one line on what not to copy (marks, distinctive identity, anything that would read as imitation)."),
     confidence: { type: "string", enum: ["high", "medium", "low"] },
   }),
-};
+});
+const TOOL_NAME = "record_design_read";
 
-const SYSTEM = `You read images from one person's private reference library. The owner is a designer. They save UI, web, brand and visual examples so that AI assistants can use them later as visual direction on new projects. Your read is what those assistants will see, so make it specific and usable, not decorative.
+const systemPrompt = (vocab: { name: string; grp: string; description: string }[]) => `You read images from one person's private reference library. The owner is a designer. They save UI, web, brand and visual examples so that AI assistants can use them later as visual direction on new projects. Your read is what those assistants will see, so make it specific and usable, not decorative.
 
 For each image, call record_design_read exactly once and write nothing else.
 
@@ -85,6 +88,10 @@ IS IT A REFERENCE? True for interfaces, websites, brand and identity work, logos
 PALETTE: a measured palette follows the image, as hex values with the share of the image each covers. Choose palette colours ONLY from that list, copying hex values exactly, and give each a role. Large shares are usually background or surface; a small saturated share is often the accent. Use role "imagery" for colours that come from photographs inside the design rather than from the design system. Skip measured colours that are only JPEG noise or anti-aliasing.
 
 TYPOGRAPHY: classify what you see. Name a typeface family only when you genuinely recognise it, with an honest confidence; a wrong name is worse than none.
+
+AESTHETICS: choose two to five tags, only from this vocabulary, mixing groups where they fit (for example one interface or illustration style, one genre, one mood):
+${vocab.map((v) => `- ${v.name} (${v.grp}): ${v.description}`).join("\n")}
+Use the mood and era fields for nuance the vocabulary doesn't capture.
 
 HOW TO BORROW: write it as advice to a designer starting a different project: the transferable moves (proportions, spacing, colour ratios, type pairings, component patterns), not a description of the image. End with what not to copy.
 
@@ -107,12 +114,12 @@ function contextText(a: any, m: { width: number; height: number; palette: { hex:
   return parts.join("\n");
 }
 
-function params(model: string, imageB64: string, mime: string, text: string) {
+function params(model: string, imageB64: string, mime: string, text: string, ctx: Ctx) {
   const p: any = {
     model,
     max_tokens: 16000,
-    system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-    tools: [TOOL],
+    system: [{ type: "text", text: ctx.system, cache_control: { type: "ephemeral" } }],
+    tools: [ctx.tool],
     // Forced tool choice is rejected on the current models; the prompt names the tool and strict keeps it schema-valid.
     tool_choice: { type: "auto" },
     messages: [{ role: "user", content: [
@@ -134,7 +141,9 @@ function headers(key: string, model: string) {
   return h;
 }
 
-async function readOne(a: any, model: string, key: string) {
+type Ctx = { system: string; tool: any };
+
+async function readOne(a: any, model: string, key: string, ctx: Ctx) {
   const url = Deno.env.get("SUPABASE_URL"), srk = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const r = await fetch(`${url}/storage/v1/object/${IMAGE_BUCKET}/${a.storage_path}`, { headers: { authorization: `Bearer ${srk}` } });
   if (!r.ok) return { error: `storage ${r.status}` };
@@ -146,11 +155,11 @@ async function readOne(a: any, model: string, key: string) {
   let m;
   try { m = await measure(bytes); } catch (e) { return { error: `decode: ${String(e).slice(0, 120)}` }; }
 
-  const res = await fetch(`${API}/messages`, { method: "POST", headers: headers(key, model), body: JSON.stringify(params(model, encodeBase64(bytes), mime, contextText(a, m))) });
+  const res = await fetch(`${API}/messages`, { method: "POST", headers: headers(key, model), body: JSON.stringify(params(model, encodeBase64(bytes), mime, contextText(a, m), ctx)) });
   const j = await res.json();
   if (!res.ok) return { error: `${res.status} ${JSON.stringify(j).slice(0, 300)}`, measured: m };
   if (j.stop_reason === "refusal") return { error: `refusal ${j.stop_details?.category ?? ""}`, measured: m, usage: j.usage };
-  const read = (j.content ?? []).find((c: any) => c.type === "tool_use" && c.name === TOOL.name)?.input;
+  const read = (j.content ?? []).find((c: any) => c.type === "tool_use" && c.name === TOOL_NAME)?.input;
   if (!read) return { error: `no tool call (${j.stop_reason})`, measured: m, usage: j.usage };
 
   // Keep only palette entries whose hex came from the measurement.
@@ -176,8 +185,8 @@ async function saveRead(a: any, out: any, model: string) {
                width = coalesce(width, ${out.measured.width}), height = coalesce(height, ${out.measured.height})
              where id = ${a.id}`;
     if (out.read.is_reference && out.read.aesthetics.length) {
-      await tx`update hopper.notes set aesthetics = (select coalesce(array_agg(distinct t order by t), '{}')
-                 from unnest(aesthetics || ${out.read.aesthetics}::text[]) t)
+      // canonical_aesthetics keeps only vocabulary tags (mapping any older free-form tags through their aliases).
+      await tx`update hopper.notes set aesthetics = hopper.canonical_aesthetics(aesthetics || ${out.read.aesthetics}::text[])
                where id = ${a.note_id}`;
     }
     return { saved: true };
@@ -228,10 +237,13 @@ Deno.serve(async (req: Request) => {
         and (${redo}::boolean or a.design_read is null)
       order by n.created_at desc, a.id limit ${limit}`;
 
+    const vocab = await sql`select name, grp, description from hopper.aesthetics order by grp, name` as any[];
+    const ctx: Ctx = { system: systemPrompt(vocab), tool: buildTool(vocab.map((v) => v.name)) };
+
     // One at a time keeps decoding within the function's compute limit.
     const results: any[] = [];
     for (const a of atts as any[]) {
-      const out: any = await readOne(a, model, key);
+      const out: any = await readOne(a, model, key, ctx);
       if (write && out.read) out.write = await saveRead(a, out, model);
       results.push({ attachment_id: a.id, note_id: a.note_id, ...out });
     }
