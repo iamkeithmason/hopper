@@ -234,9 +234,13 @@ async function loadMore() {
     }
   } catch (e) { $("status").textContent = e.message; state.done = true; }
   state.loading = false; $("more").textContent = "";
+  // The observer only fires when "more" crosses into range. If a batch didn't push it back out (a tall screen,
+  // short cards), nothing would fire again, so look again: observing afresh reports the current state.
+  if (!state.done) { moreObserver.unobserve($("more")); moreObserver.observe($("more")); }
 }
 
-new IntersectionObserver((es) => { if (es[0].isIntersecting) loadMore(); }, { rootMargin: "800px" }).observe($("more"));
+const moreObserver = new IntersectionObserver((es) => { if (es[0].isIntersecting) loadMore(); }, { rootMargin: "800px" });
+moreObserver.observe($("more"));
 
 let searchTimer;
 $("q").addEventListener("input", () => {
