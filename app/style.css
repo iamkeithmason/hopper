@@ -31,14 +31,16 @@ textarea { resize: vertical; }
 .consent-actions button:disabled { opacity: .5; }
 
 /* header: hides on scroll down, returns on scroll up */
-header#top { position: sticky; top: 0; z-index: 10; background: var(--bg); padding: calc(env(safe-area-inset-top) + 10px) 12px 6px; transition: transform .22s ease; }
+header#top { position: sticky; top: 0; z-index: 10; background: var(--bg); padding: calc(env(safe-area-inset-top) + 10px) 8px 6px; transition: transform .22s ease; }
 header#top.hide { transform: translateY(-100%); }
-.bar { display: flex; gap: 6px; align-items: center; max-width: 1400px; margin: 0 auto; }
+.bar { display: flex; gap: 6px; align-items: center; }
 #search-form { flex: 1; }
+/* Wide screens: search sits at a comfortable width and widens while you use it. */
+@media (min-width: 700px) { #search-form { flex: 0 1 560px; transition: flex-basis .2s ease; } #search-form:focus-within { flex-basis: 900px; } }
 #q { border-radius: 22px; padding: 10px 16px; background: var(--card); }
 .icon-btn { width: 40px; height: 40px; border-radius: 20px; font-size: 20px; color: var(--mid); flex: none; }
 .icon-btn:hover { background: var(--chip); }
-.pills { display: flex; gap: 18px; overflow-x: auto; scrollbar-width: none; padding: 10px 4px 4px; max-width: 1400px; margin: 0 auto; white-space: nowrap; }
+.pills { display: flex; gap: 18px; overflow-x: auto; scrollbar-width: none; padding: 10px 4px 4px; white-space: nowrap; }
 .pills::-webkit-scrollbar { display: none; }
 .pills button { padding: 4px 0; color: var(--mid); font-weight: 500; border-bottom: 2px solid transparent; }
 .pills button.on { color: var(--ink); border-color: var(--ink); }
@@ -47,7 +49,8 @@ header#top.hide { transform: translateY(-100%); }
 .pills.sub button.on { background: var(--ink); color: var(--bg); }
 
 /* feed: masonry, columns filled by app.js (shortest column first, cards never move) */
-main { padding: 6px 8px 40px; max-width: 1400px; margin: 0 auto; }
+main { padding: 6px 8px 40px; }
+@media (min-width: 700px) { main, header#top { padding-left: 16px; padding-right: 16px; } }
 .feed { display: flex; align-items: flex-start; gap: 8px; }
 .feed > .col { flex: 1 1 0; min-width: 0; }
 @media (min-width: 1000px) { .feed { gap: 12px; } }
@@ -59,6 +62,10 @@ main { padding: 6px 8px 40px; max-width: 1400px; margin: 0 auto; }
 .card .c-excerpt { font-size: 13.5px; color: var(--mid); display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; }
 .card.quote .c-excerpt { font-family: Georgia, "Times New Roman", serif; font-size: 14.5px; color: var(--ink); }
 .card .c-media { position: relative; }
+/* Image cards: the image is its own rounded tile and the caption sits on the page beneath it. */
+.card.has-media { background: transparent !important; box-shadow: none; overflow: visible; }
+.card.has-media > .c-media { border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+.card.has-media > .c-text.one { padding: 6px 4px 2px; }
 .card .c-text.one { padding: 7px 12px 8px; }
 .card .c-line { margin: 0; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .badge { text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }

@@ -2,7 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.4";
 
 // Hopper embeddings with Supabase's built-in gte-small model (384 dimensions). Free; no API key.
-// Embeds UNLOCKED notes that have no embedding yet. Locked notes never get a row.
+// Embeds UNLOCKED notes that have no embedding yet. Locked and binned notes never get a row.
 // Body: { limit?: number (default 4, max 8), ids?: uuid[], refresh?: bool }. Guarded by the hashed invoke token.
 // refresh (with ids) re-embeds notes that already have an embedding, e.g. after hopper-design adds a design read.
 
@@ -55,7 +55,7 @@ Deno.serve(async (req: Request) => {
         (select array_agg(w.title) from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = n.id) as works,
         (select l.page_title from hopper.note_links l where l.note_id = n.id and l.page_title is not null limit 1) as link_title
       from hopper.notes n
-      where n.is_locked = false and n.tagged_at is not null
+      where n.is_locked = false and n.deleted_at is null and n.tagged_at is not null
         and (${refresh}::boolean or not exists (select 1 from hopper.note_embeddings e where e.note_id = n.id))
         and (${ids}::uuid[] is null or n.id = any(${ids}::uuid[]))
       order by n.created_at limit ${limit}`;
@@ -66,16 +66,16 @@ Deno.serve(async (req: Request) => {
       if (!text.trim()) continue;
       const emb = await session.run(text, { mean_pool: true, normalize: true });
       const vec = `[${Array.from(emb as number[]).join(",")}]`;
-      // Re-check the lock at write time, so a note locked meanwhile never gets a row.
+      // Re-check the lock and the Bin at write time, so a note locked or binned meanwhile never gets a row.
       const r = await sql`insert into hopper.note_embeddings (note_id, embedding, model)
                           select ${n.id}, ${vec}::extensions.vector, 'gte-small'
-                          where exists (select 1 from hopper.notes where id = ${n.id} and is_locked = false)
+                          where exists (select 1 from hopper.notes where id = ${n.id} and is_locked = false and deleted_at is null)
                           on conflict (note_id) do update set embedding = excluded.embedding, created_at = now()
                             where ${refresh}::boolean returning 1`;
       done += r.length;
     }
     const [{ left }] = await sql`select count(*)::int as left from hopper.notes n
-      where n.is_locked = false and n.tagged_at is not null
+      where n.is_locked = false and n.deleted_at is null and n.tagged_at is not null
         and not exists (select 1 from hopper.note_embeddings e where e.note_id = n.id)`;
     return new Response(JSON.stringify({ embedded: done, left }), { headers: { "content-type": "application/json" } });
   } catch (e) {
