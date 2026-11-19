@@ -22,6 +22,13 @@ textarea { resize: vertical; }
 .signin-box img { border-radius: 14px; }
 .signin-box h1 { margin: 10px 0 24px; font-size: 26px; }
 .signin-box form { display: grid; gap: 10px; text-align: left; }
+.consent-box { margin-top: 12vh; }
+.consent-box #c-body { text-align: left; line-height: 1.5; }
+.consent-list { padding-left: 20px; margin: 8px 0 12px; }
+.consent-actions { display: flex; gap: 10px; margin-top: 18px; }
+.consent-actions button { flex: 1; }
+.consent-actions .ghost { border: 1px solid var(--line); border-radius: 10px; padding: 10px 18px; font-weight: 600; }
+.consent-actions button:disabled { opacity: .5; }
 
 /* header: hides on scroll down, returns on scroll up */
 header#top { position: sticky; top: 0; z-index: 10; background: var(--bg); padding: calc(env(safe-area-inset-top) + 10px) 12px 6px; transition: transform .22s ease; }

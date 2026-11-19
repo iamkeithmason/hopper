@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c1b19">
+<meta name="robots" content="noindex, nofollow">
+<title>Connect Hopper</title>
+<link rel="icon" href="/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- OAuth consent for MCP clients such as claude.ai (HOP-18 sign-in). Supabase Auth sends the browser here
+     with ?authorization_id=…; the owner signs in if needed, then allows or denies access. -->
+<section class="screen">
+  <div class="signin-box consent-box">
+    <img src="/icon-192.png" alt="" width="56" height="56">
+    <h1 id="c-title">Connect Hopper</h1>
+    <div id="c-body"><p class="muted">Checking the request…</p></div>
+    <form id="c-signin" hidden>
+      <label for="c-email">Sign in to Hopper first</label>
+      <input id="c-email" type="email" autocomplete="email" required placeholder="you@example.com">
+      <button type="submit" class="primary">Send sign-in link</button>
+    </form>
+    <p id="c-msg" class="muted"></p>
+  </div>
+</section>
+<script type="module" src="/consent.js"></script>
+</body>
+</html>
