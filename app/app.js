@@ -437,10 +437,11 @@ function designNotes(n) {
   };
   return el("section", { class: "design-notes" },
     el("h3", {}, "Design notes"),
-    n.aesthetics?.length ? el("div", { class: "chips" }, n.aesthetics.map((a) => el("span", { class: "chip" }, a))) : null,
     reads.map((d, i) => el("div", { class: "dn-read" },
       reads.length > 1 ? el("p", { class: "dn-label" }, `Image ${i + 1}`) : null,
       d.summary ? el("p", { class: "dn-summary" }, d.summary) : null,
+      // The note's aesthetic tags sit under the first description.
+      i === 0 && n.aesthetics?.length ? el("div", { class: "chips" }, n.aesthetics.map((a) => el("span", { class: "chip" }, a))) : null,
       d.palette.length ? paletteStrip(d.palette) : null,
       d.borrow ? el("div", { class: "borrow" }, el("p", { class: "borrow-k" }, "How to borrow this"), el("p", {}, d.borrow)) : null,
       el("details", { class: "dn-more" },
