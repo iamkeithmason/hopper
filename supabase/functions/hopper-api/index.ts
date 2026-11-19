@@ -201,11 +201,17 @@ async function cards(rows: any[]) {
   });
 }
 
+// Each palette colour with the share of the image it covers, from the measurement stored with the read.
+function withShares(d: any) {
+  const share = new Map((d.measured?.palette ?? []).map((m: any) => [String(m.hex).toLowerCase(), m.share]));
+  return (d.palette ?? []).map((p: any) => ({ ...p, share: p.share ?? share.get(String(p.hex).toLowerCase()) ?? null }));
+}
+
 // The design read (from hopper-design) as the note page shows it: only for images judged design references.
 function designFor(d: any) {
   if (!d?.is_reference) return null;
   return {
-    kind: d.kind, summary: d.summary, palette: d.palette ?? [], colour_notes: d.colour_notes || null,
+    kind: d.kind, summary: d.summary, palette: withShares(d), colour_notes: d.colour_notes || null,
     type: d.typography?.classification ?? [], families: (d.typography?.likely_families ?? []).map((f: any) => f.name),
     type_notes: d.typography?.hierarchy || null, layout: d.layout?.structure || null, density: d.density,
     components: d.components ?? [], techniques: d.techniques ?? [], mood: d.mood ?? [], era: d.era || null,
