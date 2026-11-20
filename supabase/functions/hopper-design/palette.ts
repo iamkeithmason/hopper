@@ -5,7 +5,9 @@
 import { decode } from "https://deno.land/x/imagescript@1.3.0/mod.ts";
 
 export type Swatch = { hex: string; share: number };
-export type Measured = { width: number; height: number; palette: Swatch[]; lightness: number | null; sampled: boolean };
+// unsampled says why there is no palette: "large" (too many pixels to decode in time) or "format" (the decoder
+// can't read it: imagescript has no WebP decoder). Either way the image still gets a read, just without hex values.
+export type Measured = { width: number; height: number; palette: Swatch[]; lightness: number | null; sampled: boolean; unsampled?: "large" | "format" };
 
 // Above this many pixels, decoding runs past the edge function's compute limit, so colours are not sampled.
 const MAX_PIXELS = 3_000_000;
@@ -24,6 +26,24 @@ export function jpegSize(b: Uint8Array): { width: number; height: number } | nul
     if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue; }
     i += 2 + ((b[i + 2] << 8) | b[i + 3]);
   }
+  return null;
+}
+
+// Width and height from the header of a JPEG, PNG, GIF or WebP, without decoding. Null if not found.
+export function imageSize(b: Uint8Array): { width: number; height: number } | null {
+  const j = jpegSize(b);
+  if (j) return j;
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  try {
+    if (b[0] === 0x89 && b[1] === 0x50) return { width: v.getUint32(16), height: v.getUint32(20) };
+    if (b[0] === 0x47 && b[1] === 0x49) return { width: v.getUint16(6, true), height: v.getUint16(8, true) };
+    if (b[0] === 0x52 && b[8] === 0x57) {
+      const kind = String.fromCharCode(b[12], b[13], b[14], b[15]);
+      if (kind === "VP8 ") return { width: v.getUint16(26, true) & 0x3fff, height: v.getUint16(28, true) & 0x3fff };
+      if (kind === "VP8L") { const x = v.getUint32(21, true); return { width: (x & 0x3fff) + 1, height: ((x >> 14) & 0x3fff) + 1 }; }
+      if (kind === "VP8X") return { width: 1 + (b[24] | (b[25] << 8) | (b[26] << 16)), height: 1 + (b[27] | (b[28] << 8) | (b[29] << 16)) };
+    }
+  } catch (_) { /* unreadable header */ }
   return null;
 }
 
@@ -66,9 +86,14 @@ function medianCut(px: Px[], boxes: number): Px[][] {
 }
 
 export async function measure(bytes: Uint8Array): Promise<Measured> {
-  const size = jpegSize(bytes);
-  if (size && size.width * size.height > MAX_PIXELS) return { ...size, palette: [], lightness: null, sampled: false };
-  const img: any = await decode(bytes);
+  const size = imageSize(bytes);
+  if (size && size.width * size.height > MAX_PIXELS) return { ...size, palette: [], lightness: null, sampled: false, unsampled: "large" };
+  let img: any;
+  try { img = await decode(bytes); } catch (_) {
+    // WebP (and anything else imagescript can't decode): read it without a measured palette rather than not at all.
+    // Without this, the sweep picks the same undecodable images first every time and stalls.
+    return { ...(size ?? { width: 0, height: 0 }), palette: [], lightness: null, sampled: false, unsampled: "format" };
+  }
   const width = img.width, height = img.height;
   const step = Math.max(1, Math.ceil(Math.max(width, height) / 160));
   const bm: Uint8ClampedArray = img.bitmap;
