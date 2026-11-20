@@ -9,7 +9,8 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin" | "event", ... }
 // "capture" also takes image_urls (fetched and kept by Hopper), screenshot (first screen and whole page of the url,
 // from the screenshot function on the Vercel app) and, from the invoke token only, source: "assistant".
-// "screenshot" { id, url? } adds page screenshots to an existing note (its link, or another page as a new link), or retakes them.
+// "screenshot" { id, url?, views? } adds page screenshots to an existing note (its link, or another page as a new link), or retakes them.
+// "prune_shots" (invoke token only) removes screenshot files no attachment points at.
 // "note" also returns the note's aesthetic tags and, for images judged design references, their design read.
 // Bin: "delete" moves a note to the Bin (deleted_at); the nightly hopper-bin job erases it after BIN_DAYS.
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
@@ -257,9 +258,11 @@ async function linkify(id: string, anySite = false) {
 }
 
 // Page screenshots (hopper-shot): the Vercel app's /api/shot renders the page in headless Chrome and returns the
-// first screen (1440 x 900) and the whole page (scaled to fit 8000 px) as JPEGs. The token is in Vault ('hopper_shot_token').
-type Shot = { first: string; full: string | null; width: number; height: number; full_height: number | null; full_scale?: number; clipped: boolean; title: string | null };
-async function takeShot(url: string): Promise<Shot | { error: string }> {
+// first screen (1440 x 900), the whole page (scaled to fit 8000 px) and the first screen on a phone (390 x 844 at 2x)
+// as JPEGs. views limits what is taken: desktop (first screen and whole page) and phone. The token is in Vault ('hopper_shot_token').
+type Shot = { first: string | null; full: string | null; phone: string | null; width: number; height: number; full_height: number | null; full_scale?: number; clipped: boolean; title: string | null };
+const ROLES = ["first-screen-1440", "full-page", "first-screen-390"];
+async function takeShot(url: string, roles = ROLES): Promise<Shot | { error: string }> {
   try {
     const [cfg] = await sql`select (select value from hopper.settings where key = 'shot_url') as shot_url,
       (select decrypted_secret from vault.decrypted_secrets where name = 'hopper_shot_token') as tok`;
@@ -267,10 +270,11 @@ async function takeShot(url: string): Promise<Shot | { error: string }> {
     const r = await fetch(cfg.shot_url, {
       method: "POST", signal: AbortSignal.timeout(75000),
       headers: { "content-type": "application/json", "x-shot-token": cfg.tok },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, desktop: roles.some((x) => x !== "first-screen-390"), full: roles.includes("full-page"),
+                             phone: roles.includes("first-screen-390") }),
     });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok || !j.first) return { error: j.error ? `${j.error}${j.stage ? ` (${j.stage})` : ""}` : `screenshot ${r.status}` };
+    if (!r.ok || !(j.first || j.phone)) return { error: j.error ? `${j.error}${j.stage ? ` (${j.stage})` : ""}` : `screenshot ${r.status}` };
     return j as Shot;
   } catch (e) { return { error: `screenshot: ${String(e).slice(0, 120)}` }; }
 }
@@ -297,6 +301,7 @@ async function keepShots(noteId: string, shot: Shot, pageUrl: string) {
   const parts: [string, string | null, string, number, number | null][] = [
     ["first-screen-1440", shot.first, `First screen at ${shot.width} x ${shot.height}`, shot.width, shot.height],
     ["full-page", shot.full, fullCaption(shot), shot.width, shot.full_height],
+    ["first-screen-390", shot.phone, "First screen on a phone, 390 x 844 at 2x", 780, 1688],
   ];
   let kept = 0;
   for (const [role, b64, caption, w, h] of parts) {
@@ -315,8 +320,9 @@ async function keepShots(noteId: string, shot: Shot, pageUrl: string) {
     kept++;
   }
   if (kept) {
+    // A phone-only retake knows nothing of the page's height at 1440, so it leaves the recorded height alone.
     await sql`insert into hopper.note_links (note_id, url, page_title, page_height_px_at_1440, captured_on)
-              values (${noteId}, ${pageUrl}, ${shot.title ?? null}, ${shot.full_height ?? null}, current_date)
+              values (${noteId}, ${pageUrl}, ${shot.title ?? null}, ${shot.full ? shot.full_height ?? null : null}, current_date)
               on conflict (note_id, url) do update set captured_on = excluded.captured_on,
                 page_height_px_at_1440 = coalesce(excluded.page_height_px_at_1440, hopper.note_links.page_height_px_at_1440),
                 page_title = coalesce(hopper.note_links.page_title, excluded.page_title)`;
@@ -688,10 +694,23 @@ Deno.serve(async (req: Request) => {
         const [link] = await sql`select url from hopper.note_links where note_id = ${n.id} order by url limit 1`;
         const url = String(b.url ?? link?.url ?? "");
         if (!/^https?:\/\//i.test(url)) return json({ error: "this note has no web address" }, 400);
-        const shot = await takeShot(url);
+        // { views: ["first-screen-390"] } takes only some views, e.g. adding phone screens without redoing the desktop ones.
+        const roles = Array.isArray(b.views) ? ROLES.filter((r) => b.views.includes(r)) : ROLES;
+        if (!roles.length) return json({ error: `views must be some of ${ROLES.join(", ")}` }, 400);
+        const shot = await takeShot(url, roles);
         if ("error" in shot) return json(shot, 502);
         const kept = await keepShots(n.id, shot, url);
         return json({ ok: true, kept, clipped: shot.clipped, full_height: shot.full_height });
+      }
+      case "prune_shots": {
+        // Server-side only: remove screenshot files that no attachment points at any more (left by retakes under the
+        // older file names). Only touches shot/ in the images bucket.
+        if (user.email !== "service") return json({ error: "not available" }, 403);
+        const rows = await sql`select o.name from storage.objects o where o.bucket_id = 'hopper-images' and o.name like 'shot/%'
+                                 and not exists (select 1 from hopper.attachments a where a.storage_path = o.name) limit 500`;
+        const names = rows.map((r: any) => r.name);
+        if (names.length) { const { error } = await storage.remove(names); if (error) return json({ error: error.message }, 500); }
+        return json({ ok: true, removed: names });
       }
       case "relink": {
         // Repair a note saved before links were recognised: linkify, re-embed and file if it has no projects.

@@ -140,6 +140,31 @@ export async function capture(url, width, height, wantFull, lite) {
   }
 }
 
+// The first screen on a phone: 390 x 844 at 2x, with a phone browser's user agent, so sites serve their mobile layout.
+// Its own browser, so a crash here never costs the desktop shots.
+const PHONE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1 Hopper/1.0";
+export async function capturePhone(url) {
+  let browser;
+  try {
+    browser = await launch(390, 844);
+    const page = await browser.newPage();
+    await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+    await page.setUserAgent(PHONE_UA);
+    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    await page.setExtraHTTPHeaders({ "accept-language": "en-GB,en;q=0.9" });
+    const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 15000 }).catch(() => null);
+    if (!resp) await page.waitForNetworkIdle({ idleTime: 500, timeout: 4000 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 600));
+    return { phone: await page.screenshot({ type: "jpeg", quality: 80 }), title: await page.title().catch(() => null) };
+  } catch (e) {
+    const error = String(e?.message ?? e).slice(0, 300);
+    console.error("phone shot failed", url, error);
+    return { phone: null, error };
+  } finally {
+    await browser?.close().catch(() => {});
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
   const want = process.env.SHOT_TOKEN_SHA256;
@@ -152,18 +177,32 @@ export default async function handler(req, res) {
   const width = Math.min(Math.max(Number(body.width) || 1440, 360), 1920);
   const height = Math.min(Math.max(Number(body.height) || 900, 600), 1400);
   const wantFull = body.full !== false;
+  const wantDesktop = body.desktop !== false;
+  const wantPhone = body.phone !== false;
+  const started = Date.now();
 
   // Headless Chrome sometimes dies mid-shot on heavy pages ("Target closed"). Try once more in lite mode,
   // and keep whichever attempt got further: a first screen on its own is still worth keeping.
-  let r = await capture(url, width, height, wantFull, false);
-  if (r.error || (wantFull && !r.full)) {
-    const again = await capture(url, width, height, wantFull, true);
-    if ((again.first && !r.first) || (again.full && !r.full)) r = { ...again, first: again.first ?? r.first };
+  let r = { first: null, full: null, fullHeight: null, clipped: false, scale: 1, title: null, finalUrl: url, status: null };
+  if (wantDesktop) {
+    r = await capture(url, width, height, wantFull, false);
+    if (r.error || (wantFull && !r.full)) {
+      const again = await capture(url, width, height, wantFull, true);
+      if ((again.first && !r.first) || (again.full && !r.full)) r = { ...again, first: again.first ?? r.first };
+    }
   }
-  if (!r.first) return res.status(502).json({ error: r.error ?? "no screenshot", stage: r.stage });
+  // The phone screen comes last and only while there's time left in the function's 60 seconds.
+  let phone = null;
+  if (wantPhone && Date.now() - started < 38000) {
+    const p = await capturePhone(url);
+    phone = p.phone;
+    r.title = r.title ?? p.title ?? null;
+  }
+  if (!r.first && !phone) return res.status(502).json({ error: r.error ?? "no screenshot", stage: r.stage });
   return res.status(200).json({
-    first: Buffer.from(r.first).toString("base64"),
+    first: r.first ? Buffer.from(r.first).toString("base64") : null,
     full: r.full ? Buffer.from(r.full).toString("base64") : null,
+    phone: phone ? Buffer.from(phone).toString("base64") : null,
     width, height, full_height: r.fullHeight, full_scale: Math.round(r.scale * 100) / 100, clipped: r.clipped,
     title: r.title, final_url: r.finalUrl, status: r.status,
   });
