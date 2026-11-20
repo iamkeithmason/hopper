@@ -7,6 +7,7 @@
 // POST { url, width?: 1440, height?: 900, full?: true }
 //   -> { first, full, width, height, full_height, full_scale, clipped, title, final_url }  (images as base64 JPEG)
 import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
 
@@ -33,13 +34,30 @@ function allowed(raw) {
 }
 
 // Two requests on one warm instance can race to unpack Chrome ("spawn ETXTBSY"). Wait and launch again.
+// The Chrome package ships only Open Sans, so symbols such as arrows came out as empty boxes.
+// DejaVu Sans (app/fonts) covers them. fontconfig reads /var/task/fonts, where Vercel should place app/fonts;
+// copying into /tmp/fonts as well makes sure, whatever the bundle layout.
+async function addFonts() {
+  const dir = "/tmp/fonts";
+  for (const f of ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf"]) {
+    const to = `${dir}/${f}`;
+    if (existsSync(to)) continue;
+    try {
+      mkdirSync(dir, { recursive: true });
+      copyFileSync(new URL(`../fonts/${f}`, import.meta.url), to);
+    } catch (e) { console.error("font copy failed", f, String(e)); }
+  }
+}
+
 async function launch(width, height) {
+  const executablePath = await chromium.executablePath();
+  await addFonts();
   for (let i = 0; ; i++) {
     try {
       return await puppeteer.launch({
         args: await puppeteer.defaultArgs({ args: chromium.args, headless: "shell" }),
         defaultViewport: { width, height, deviceScaleFactor: 1 },
-        executablePath: await chromium.executablePath(),
+        executablePath,
         headless: "shell",
       });
     } catch (e) {
