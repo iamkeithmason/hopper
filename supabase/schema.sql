@@ -12,6 +12,7 @@
 -- hopper.canonical_aesthetics) and 20261119093000_hopper_mcp_token (settings.mcp_token_sha256; token in Vault).
 -- 20261120134438_hopper_benchmark_pages: page context columns on attachments and note_links, and
 -- hopper.benchmark_scores (columns below are current as of 20 Nov 2026).
+-- 20261120190000_hopper_moves: hopper.moves (visual move vocabulary) and attachments.moves.
 --
 -- Extensions used (in schema extensions): vector, pg_net, pg_cron.
 -- Grants: every table and view here has access revoked from public, anon and authenticated.
@@ -74,6 +75,7 @@ create table hopper.attachments (
   rendered_height_at_1440 integer,
   position_from_top_px_at_1440 integer,
   captured_on date,
+  moves text[] not null default '{}'::text[],  -- visual moves from hopper.moves, set by hopper-design
   constraint attachments_pkey primary key (id),
   constraint attachments_image_role_check check (image_role in ('first-screen-1440','first-screen-390','full-page','figure')),
   constraint attachments_note_id_original_file_key unique (note_id, original_file)
@@ -173,6 +175,14 @@ create table hopper.note_works (
   primary key (note_id, work_id)
 );
 
+-- Visual moves: what an image does as design (annotated-screen, component-collage...). Add a term once it turns up twice.
+create table hopper.moves (
+  name text primary key,
+  description text not null,
+  added_on date not null default current_date
+);
+alter table hopper.moves enable row level security;
+
 -- Portfolio benchmark scores, copied from Notion's "Portfolio Benchmarks" (the source of truth; formulas stay there).
 create table hopper.benchmark_scores (
   note_id uuid primary key references hopper.notes(id) on delete cascade,
@@ -237,6 +247,7 @@ create table hopper.settings (
 -- Indexes
 create index attachments_note_idx on hopper.attachments (note_id);
 create index attachments_role_idx on hopper.attachments (note_id, image_role);
+create index attachments_moves_idx on hopper.attachments using gin (moves);
 create index benchmark_scores_visual_idx on hopper.benchmark_scores (visual_quality desc nulls last);
 create index benchmark_scores_presentation_idx on hopper.benchmark_scores (presentation desc nulls last);
 create index note_links_note_idx on hopper.note_links (note_id);

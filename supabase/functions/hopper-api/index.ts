@@ -259,8 +259,11 @@ async function linkify(id: string, anySite = false) {
 
 // Page screenshots (hopper-shot): the Vercel app's /api/shot renders the page in headless Chrome and returns the
 // first screen (1440 x 900), the whole page (scaled to fit 8000 px) and the first screen on a phone (390 x 844 at 2x)
-// as JPEGs. views limits what is taken: desktop (first screen and whole page) and phone. The token is in Vault ('hopper_shot_token').
-type Shot = { first: string | null; full: string | null; phone: string | null; width: number; height: number; full_height: number | null; full_scale?: number; clipped: boolean; title: string | null };
+// as JPEGs (the whole page stitched from scroll frames), plus the page's six largest figures and its video count.
+// views limits what is taken: desktop (first screen and whole page) and phone. The token is in Vault ('hopper_shot_token').
+type Figure = { src: string; alt?: string; caption?: string; width: number; height: number; top: number };
+type Shot = { first: string | null; full: string | null; phone: string | null; width: number; height: number; full_height: number | null; full_scale?: number; clipped: boolean; title: string | null;
+  figures?: Figure[]; videos?: number | null };
 const ROLES = ["first-screen-1440", "full-page", "first-screen-390"];
 async function takeShot(url: string, roles = ROLES): Promise<Shot | { error: string }> {
   try {
@@ -319,15 +322,47 @@ async function keepShots(noteId: string, shot: Shot, pageUrl: string) {
                 height = excluded.height, caption = excluded.caption, captured_on = excluded.captured_on, design_read = null`;
     kept++;
   }
+  const figures = await keepFigures(noteId, shot, pageUrl, stem);
   if (kept) {
     // A phone-only retake knows nothing of the page's height at 1440, so it leaves the recorded height alone.
-    await sql`insert into hopper.note_links (note_id, url, page_title, page_height_px_at_1440, captured_on)
-              values (${noteId}, ${pageUrl}, ${shot.title ?? null}, ${shot.full ? shot.full_height ?? null : null}, current_date)
+    await sql`insert into hopper.note_links (note_id, url, page_title, page_height_px_at_1440, videos_on_page, captured_on)
+              values (${noteId}, ${pageUrl}, ${shot.title ?? null}, ${shot.full ? shot.full_height ?? null : null},
+                ${shot.first ? shot.videos ?? null : null}, current_date)
               on conflict (note_id, url) do update set captured_on = excluded.captured_on,
                 page_height_px_at_1440 = coalesce(excluded.page_height_px_at_1440, hopper.note_links.page_height_px_at_1440),
+                videos_on_page = coalesce(excluded.videos_on_page, hopper.note_links.videos_on_page),
                 page_title = coalesce(hopper.note_links.page_title, excluded.page_title)`;
   }
-  return kept;
+  return kept + figures;
+}
+
+// The page's largest figures (from the shot service: up to six, in page order), each kept with where it sat on the
+// page: rendered size and distance from the top at the capture width, alt text and the caption beside it.
+// A figure already on the note (same address) keeps its stored copy and design read and only gains the context.
+async function keepFigures(noteId: string, shot: Shot, pageUrl: string, stem: string) {
+  const figs = (shot.figures ?? []).filter((f) => /^https?:\/\//i.test(f.src)).slice(0, 6);
+  const results = await Promise.all(figs.map(async (f, i) => {
+    const ctx = { caption: `Figure ${i + 1} of the page${f.alt ? `: ${f.alt}` : ""}`.slice(0, 400), onPage: f.caption?.trim() || null };
+    const upd = await sql`update hopper.attachments set image_role = 'figure', source_page_url = ${pageUrl},
+        caption = coalesce(caption, ${ctx.caption}), caption_on_page = ${ctx.onPage}, rendered_width_at_1440 = ${f.width},
+        rendered_height_at_1440 = ${f.height}, position_from_top_px_at_1440 = ${f.top}, captured_on = current_date
+      where note_id = ${noteId} and original_file = ${f.src} returning id`;
+    if (upd.length) return 1;
+    const p = await fetchPicture(f.src, pageUrl);
+    if (!p) return 0;
+    const path = `shot/${noteId}/${stem}--figure-${String(i + 1).padStart(2, "0")}.${IMAGE_TYPES[p.mime]}`;
+    const { error } = await storage.upload(path, p.bytes, { contentType: p.mime, upsert: true });
+    if (error) return 0;
+    const size = pictureSize(p.bytes);
+    const rows = await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption,
+                image_role, source_page_url, caption_on_page, rendered_width_at_1440, rendered_height_at_1440,
+                position_from_top_px_at_1440, captured_on)
+              values (${noteId}, ${f.src}, ${path}, ${p.mime}, ${size?.width ?? null}, ${size?.height ?? null}, ${ctx.caption},
+                'figure', ${pageUrl}, ${ctx.onPage}, ${f.width}, ${f.height}, ${f.top}, current_date)
+              on conflict (note_id, original_file) do nothing returning id`;
+    return rows.length;
+  }));
+  return results.reduce((a, b) => a + b, 0);
 }
 
 // Embed an app-captured note with the same recipe as hopper-embed (title, why saved, link, body),

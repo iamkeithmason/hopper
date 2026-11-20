@@ -5,7 +5,11 @@
 // Auth: the x-shot-token header, checked by sha256 against SHOT_TOKEN_SHA256. The token itself lives only in
 // Supabase Vault ('hopper_shot_token'); this project holds just its hash.
 // POST { url, width?: 1440, height?: 900, full?: true }
-//   -> { first, full, width, height, full_height, full_scale, clipped, title, final_url }  (images as base64 JPEG)
+//   -> { first, full, phone, width, height, full_height, full_scale, clipped, title, final_url, figures, videos }
+//   (images as base64 JPEG). The whole page is stitched from screen-sized frames taken while scrolling, so fixed
+//   backgrounds and sticky layers render as a reader sees them (a single tall capture loses them). figures lists the
+//   six largest images on the page by rendered area at this width, in page order, with address, alt text, caption,
+//   rendered size and distance from the top; videos counts video players.
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import chromium from "@sparticuz/chromium";
@@ -67,6 +71,82 @@ async function launch(width, height) {
   }
 }
 
+// The largest images on the page as a reader at this width sees them, and how many video players it holds.
+async function pageFigures(page) {
+  return await page.evaluate(() => {
+    const seen = new Set();
+    const figs = [];
+    for (const img of document.images) {
+      const src = img.currentSrc || img.src;
+      if (!src || !/^https?:/.test(src) || seen.has(src)) continue;
+      const r = img.getBoundingClientRect();
+      const st = getComputedStyle(img);
+      if (r.width < 240 || r.height < 160 || st.visibility === "hidden" || st.display === "none") continue;
+      seen.add(src);
+      const fig = img.closest("figure");
+      const cap = (fig?.querySelector("figcaption")?.innerText ?? "").trim();
+      figs.push({ src, alt: (img.alt ?? "").trim().slice(0, 300), caption: cap.slice(0, 400),
+        width: Math.round(r.width), height: Math.round(r.height), top: Math.round(r.top + window.scrollY),
+        natural: `${img.naturalWidth}x${img.naturalHeight}` });
+    }
+    const largest = figs.sort((a, b) => b.width * b.height - a.width * a.height).slice(0, 6).sort((a, b) => a.top - b.top);
+    const videos = document.querySelectorAll("video").length
+      + [...document.querySelectorAll("iframe")].filter((f) => /youtube|vimeo|loom|wistia/i.test(f.src)).length;
+    return { figures: largest, videos };
+  });
+}
+
+// The whole page, stitched from screen-sized frames taken while scrolling, scaled by `scale` and cut at `h` px.
+// Frames keep fixed backgrounds and sticky layers as a reader sees them. Small fixed or sticky elements (headers,
+// chat buttons) are hidden after the first frame so they don't repeat down the page; large ones (backdrops) stay.
+async function stitch(browser, page, width, height, h, scale) {
+  const frames = [];
+  for (let y = 0; y < h; y += height) {
+    const top = Math.min(y, Math.max(0, h - height));
+    await page.evaluate((t) => window.scrollTo(0, t), top);
+    await new Promise((r) => setTimeout(r, 220));
+    const real = await page.evaluate(() => window.scrollY);
+    frames.push({ y: real, data: (await page.screenshot({ type: "jpeg", quality: 80 })).toString("base64") });
+    if (y === 0) {
+      await page.evaluate((vh) => {
+        for (const el of document.querySelectorAll("body *")) {
+          const s = getComputedStyle(el);
+          if ((s.position === "fixed" || s.position === "sticky") && el.getBoundingClientRect().height < vh * 0.4) {
+            el.style.setProperty("visibility", "hidden", "important");
+          }
+        }
+      }, height);
+    }
+    if (top + height >= h) break;
+  }
+  await page.evaluate(() => window.scrollTo(0, 0));
+  // Composite in a blank page's canvas: the frames go in as JPEG data, the stitched page comes out the same way.
+  const sheet = await browser.newPage();
+  try {
+    const W = Math.round(width * scale), H = Math.round(h * scale);
+    for (const quality of [0.72, 0.58, 0.45]) {
+      const b64 = await sheet.evaluate(async (frames, W, H, scale, q) => {
+        const c = document.createElement("canvas");
+        c.width = W; c.height = H;
+        const g = c.getContext("2d");
+        // Later frames are drawn first, so an earlier frame (the first screen, with its header) wins any overlap.
+        for (const f of [...frames].reverse()) {
+          const img = new Image();
+          img.src = `data:image/jpeg;base64,${f.data}`;
+          await img.decode();
+          g.drawImage(img, 0, Math.round(f.y * scale), W, Math.round(img.height * scale));
+        }
+        return c.toDataURL("image/jpeg", q).split(",")[1];
+      }, frames, W, H, scale, quality);
+      const buf = Buffer.from(b64, "base64");
+      if (buf.length <= MAX_BYTES) return buf;
+    }
+    return null;
+  } finally {
+    await sheet.close().catch(() => {});
+  }
+}
+
 // One attempt at a page. lite (the retry after a crash) skips the scroll-through and keeps the whole-page shot
 // to half size or less, which needs far less memory on image-heavy pages.
 export async function capture(url, width, height, wantFull, lite) {
@@ -102,32 +182,16 @@ export async function capture(url, width, height, wantFull, lite) {
     out.title = await page.title().catch(() => null);
     out.finalUrl = page.url();
 
+    stage = "figures";
+    Object.assign(out, await pageFigures(page).catch((e) => { console.error("figures failed", url, String(e)); return {}; }));
+
     if (wantFull) {
       stage = "full page";
-      // A full-page shot grows the viewport to the page's height, which stretches anything sized in vh
-      // (a 100vh hero would fill the whole image). Pin such elements to their current pixel height first.
-      out.fullHeight = await page.evaluate(() => {
-        const vh = window.innerHeight;
-        for (const el of document.querySelectorAll("body *")) {
-          const r = el.getBoundingClientRect();
-          if (r.height >= vh * 0.6 && r.height <= vh * 1.05) {
-            const s = getComputedStyle(el);
-            if (s.position === "fixed") continue;
-            el.style.setProperty("height", `${r.height}px`, "important");
-            el.style.setProperty("min-height", `${r.height}px`, "important");
-            el.style.setProperty("max-height", `${r.height}px`, "important");
-          }
-        }
-        return Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0);
-      });
+      out.fullHeight = await page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0));
       out.scale = Math.max(Math.min(lite ? 0.5 : 1, MAX_FULL_HEIGHT / out.fullHeight), MIN_SCALE);
       const h = Math.min(out.fullHeight, Math.floor(MAX_FULL_HEIGHT / out.scale));
       out.clipped = h < out.fullHeight;
-      for (const quality of [72, 58, 45]) {
-        out.full = await page.screenshot({ type: "jpeg", quality, clip: { x: 0, y: 0, width, height: h, scale: out.scale }, captureBeyondViewport: true });
-        if (out.full.length <= MAX_BYTES) break;
-      }
-      if (out.full.length > MAX_BYTES) out.full = null;
+      out.full = await stitch(browser, page, width, height, h, out.scale);
     }
     return out;
   } catch (e) {
@@ -205,6 +269,6 @@ export default async function handler(req, res) {
     full: r.full ? Buffer.from(r.full).toString("base64") : null,
     phone: phone ? Buffer.from(phone).toString("base64") : null,
     width, height, full_height: r.fullHeight, full_scale: Math.round(r.scale * 100) / 100, clipped: r.clipped,
-    title: r.title, final_url: r.finalUrl, status: r.status,
+    title: r.title, final_url: r.finalUrl, status: r.status, figures: r.figures ?? [], videos: r.videos ?? null,
   });
 }
