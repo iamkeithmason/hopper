@@ -32,19 +32,11 @@ function allowed(raw) {
   return true;
 }
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
-  const want = process.env.SHOT_TOKEN_SHA256;
-  const tok = req.headers["x-shot-token"];
-  if (!want || typeof tok !== "string" || sha256(tok) !== want) return res.status(401).json({ error: "unauthorised" });
-
-  const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
-  const url = String(body.url ?? "");
-  if (!allowed(url)) return res.status(400).json({ error: "give a public http(s) address" });
-  const width = Math.min(Math.max(Number(body.width) || 1440, 360), 1920);
-  const height = Math.min(Math.max(Number(body.height) || 900, 600), 1400);
-
+// One attempt at a page. lite (the retry after a crash) skips the scroll-through and keeps the whole-page shot
+// to half size or less, which needs far less memory on image-heavy pages.
+export async function capture(url, width, height, wantFull, lite) {
   let browser, stage = "launch";
+  const out = { first: null, full: null, fullHeight: null, clipped: false, scale: 1, title: null, finalUrl: url, status: null };
   try {
     browser = await puppeteer.launch({
       args: await puppeteer.defaultArgs({ args: chromium.args, headless: "shell" }),
@@ -59,28 +51,32 @@ export default async function handler(req, res) {
     await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0 Safari/537.36 Hopper/1.0");
     await page.setExtraHTTPHeaders({ "accept-language": "en-GB,en;q=0.9" });
-    const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 25000 }).catch(() => null);
+    const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: lite ? 15000 : 25000 }).catch(() => null);
     if (!resp) await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => {});
+    out.status = resp?.status() ?? null;
 
-    // Scroll through once so lazy images and scroll-triggered sections load, then back to the top.
-    await page.evaluate(async () => {
-      const step = Math.max(400, Math.floor(window.innerHeight * 0.8));
-      const end = Math.min(document.documentElement.scrollHeight, 8000);
-      for (let y = 0; y < end; y += step) { window.scrollTo(0, y); await new Promise((r) => setTimeout(r, 120)); }
-      window.scrollTo(0, 0);
-    });
-    await page.waitForNetworkIdle({ idleTime: 500, timeout: 6000 }).catch(() => {});
+    if (!lite) {
+      // Scroll through once so lazy images and scroll-triggered sections load, then back to the top.
+      await page.evaluate(async () => {
+        const step = Math.max(400, Math.floor(window.innerHeight * 0.8));
+        const end = Math.min(document.documentElement.scrollHeight, 8000);
+        for (let y = 0; y < end; y += step) { window.scrollTo(0, y); await new Promise((r) => setTimeout(r, 120)); }
+        window.scrollTo(0, 0);
+      });
+      await page.waitForNetworkIdle({ idleTime: 500, timeout: 6000 }).catch(() => {});
+    }
     await new Promise((r) => setTimeout(r, 600));
 
     stage = "first screen";
-    const first = await page.screenshot({ type: "jpeg", quality: 82 });
+    out.first = await page.screenshot({ type: "jpeg", quality: 82 });
+    out.title = await page.title().catch(() => null);
+    out.finalUrl = page.url();
 
-    let full = null, fullHeight = null, clipped = false, scale = 1;
-    if (body.full !== false) {
+    if (wantFull) {
       stage = "full page";
       // A full-page shot grows the viewport to the page's height, which stretches anything sized in vh
       // (a 100vh hero would fill the whole image). Pin such elements to their current pixel height first.
-      fullHeight = await page.evaluate(() => {
+      out.fullHeight = await page.evaluate(() => {
         const vh = window.innerHeight;
         for (const el of document.querySelectorAll("body *")) {
           const r = el.getBoundingClientRect();
@@ -94,28 +90,51 @@ export default async function handler(req, res) {
         }
         return Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0);
       });
-      scale = Math.max(Math.min(1, MAX_FULL_HEIGHT / fullHeight), MIN_SCALE);
-      const h = Math.min(fullHeight, Math.floor(MAX_FULL_HEIGHT / scale));
-      clipped = h < fullHeight;
+      out.scale = Math.max(Math.min(lite ? 0.5 : 1, MAX_FULL_HEIGHT / out.fullHeight), MIN_SCALE);
+      const h = Math.min(out.fullHeight, Math.floor(MAX_FULL_HEIGHT / out.scale));
+      out.clipped = h < out.fullHeight;
       for (const quality of [72, 58, 45]) {
-        full = await page.screenshot({ type: "jpeg", quality, clip: { x: 0, y: 0, width, height: h, scale }, captureBeyondViewport: true });
-        if (full.length <= MAX_BYTES) break;
+        out.full = await page.screenshot({ type: "jpeg", quality, clip: { x: 0, y: 0, width, height: h, scale: out.scale }, captureBeyondViewport: true });
+        if (out.full.length <= MAX_BYTES) break;
       }
-      if (full.length > MAX_BYTES) full = null;
+      if (out.full.length > MAX_BYTES) out.full = null;
     }
-
-    return res.status(200).json({
-      first: Buffer.from(first).toString("base64"),
-      full: full ? Buffer.from(full).toString("base64") : null,
-      width, height, full_height: fullHeight, full_scale: Math.round(scale * 100) / 100, clipped,
-      title: await page.title().catch(() => null),
-      final_url: page.url(),
-      status: resp?.status() ?? null,
-    });
+    return out;
   } catch (e) {
-    console.error("shot failed", stage, url, String(e?.message ?? e));
-    return res.status(502).json({ error: String(e?.message ?? e).slice(0, 300), stage });
+    out.error = String(e?.message ?? e).slice(0, 300);
+    out.stage = stage;
+    console.error("shot failed", lite ? "(lite)" : "", stage, url, out.error);
+    return out;
   } finally {
     await browser?.close().catch(() => {});
   }
+}
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+  const want = process.env.SHOT_TOKEN_SHA256;
+  const tok = req.headers["x-shot-token"];
+  if (!want || typeof tok !== "string" || sha256(tok) !== want) return res.status(401).json({ error: "unauthorised" });
+
+  const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
+  const url = String(body.url ?? "");
+  if (!allowed(url)) return res.status(400).json({ error: "give a public http(s) address" });
+  const width = Math.min(Math.max(Number(body.width) || 1440, 360), 1920);
+  const height = Math.min(Math.max(Number(body.height) || 900, 600), 1400);
+  const wantFull = body.full !== false;
+
+  // Headless Chrome sometimes dies mid-shot on heavy pages ("Target closed"). Try once more in lite mode,
+  // and keep whichever attempt got further: a first screen on its own is still worth keeping.
+  let r = await capture(url, width, height, wantFull, false);
+  if (r.error || (wantFull && !r.full)) {
+    const again = await capture(url, width, height, wantFull, true);
+    if ((again.first && !r.first) || (again.full && !r.full)) r = { ...again, first: again.first ?? r.first };
+  }
+  if (!r.first) return res.status(502).json({ error: r.error ?? "no screenshot", stage: r.stage });
+  return res.status(200).json({
+    first: Buffer.from(r.first).toString("base64"),
+    full: r.full ? Buffer.from(r.full).toString("base64") : null,
+    width, height, full_height: r.fullHeight, full_scale: Math.round(r.scale * 100) / 100, clipped: r.clipped,
+    title: r.title, final_url: r.finalUrl, status: r.status,
+  });
 }
