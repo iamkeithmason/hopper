@@ -9,7 +9,7 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin" | "event", ... }
 // "capture" also takes image_urls (fetched and kept by Hopper), screenshot (first screen and whole page of the url,
 // from the screenshot function on the Vercel app) and, from the invoke token only, source: "assistant".
-// "screenshot" { id } adds page screenshots to an existing note with a link (or replaces them).
+// "screenshot" { id, url? } adds page screenshots to an existing note (its link, or another page as a new link), or retakes them.
 // "note" also returns the note's aesthetic tags and, for images judged design references, their design read.
 // Bin: "delete" moves a note to the Bin (deleted_at); the nightly hopper-bin job erases it after BIN_DAYS.
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
@@ -281,26 +281,45 @@ function fullCaption(s: Shot) {
   return s.clipped ? `Top of the page${pct} (the page is ${s.full_height} px tall)` : `Whole page${pct}`;
 }
 
-// Store a page's screenshots on a note: first screen first (it becomes the card's picture on a new note), then the
-// whole page. original_file marks them, so taking them again replaces the files and clears their design reads.
-async function keepShots(noteId: string, shot: Shot) {
+// Store a page's screenshots on a note, keyed by page, so one note can hold several pages (a portfolio's home, a case
+// study, an about page). Same scheme as hopper-import: original_file 'capture:<page>#<role>', with the image role, the
+// page address and the capture date, so list_benchmarks and get_reference treat both kinds of capture alike.
+// Taking a page again replaces its files and clears their design reads. The page also goes on the note as a link,
+// with its height at 1440 and the capture date.
+const slugOf = (u: string) => {
+  try {
+    const last = new URL(u).pathname.split("/").filter(Boolean).pop() ?? "home";
+    return last.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "home";
+  } catch { return "page"; }
+};
+async function keepShots(noteId: string, shot: Shot, pageUrl: string) {
+  const stem = `${slugOf(pageUrl)}-${(await sha256(pageUrl)).slice(0, 6)}`;
   const parts: [string, string | null, string, number, number | null][] = [
-    ["first", shot.first, "First screen, 1440 wide", shot.width, shot.height],
-    ["full", shot.full, fullCaption(shot), shot.width, shot.full_height],
+    ["first-screen-1440", shot.first, `First screen at ${shot.width} x ${shot.height}`, shot.width, shot.height],
+    ["full-page", shot.full, fullCaption(shot), shot.width, shot.full_height],
   ];
   let kept = 0;
-  for (const [kind, b64, caption, w, h] of parts) {
+  for (const [role, b64, caption, w, h] of parts) {
     if (!b64) continue;
     const bytes = decodeBase64(b64);
-    const path = `shot/${noteId}/${kind}.jpg`;
+    const path = `shot/${noteId}/${stem}--${role}.jpg`;
     const { error } = await storage.upload(path, bytes, { contentType: "image/jpeg", upsert: true });
     if (error) continue;
     const size = pictureSize(bytes);
-    await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption)
-              values (${noteId}, ${"screenshot:" + kind}, ${path}, 'image/jpeg', ${size?.width ?? w}, ${size?.height ?? h}, ${caption})
+    await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption,
+                image_role, source_page_url, captured_on)
+              values (${noteId}, ${`capture:${pageUrl}#${role}`}, ${path}, 'image/jpeg', ${size?.width ?? w}, ${size?.height ?? h}, ${caption},
+                ${role}, ${pageUrl}, current_date)
               on conflict (note_id, original_file) do update set storage_path = excluded.storage_path, width = excluded.width,
-                height = excluded.height, caption = excluded.caption, design_read = null`;
+                height = excluded.height, caption = excluded.caption, captured_on = excluded.captured_on, design_read = null`;
     kept++;
+  }
+  if (kept) {
+    await sql`insert into hopper.note_links (note_id, url, page_title, page_height_px_at_1440, captured_on)
+              values (${noteId}, ${pageUrl}, ${shot.title ?? null}, ${shot.full_height ?? null}, current_date)
+              on conflict (note_id, url) do update set captured_on = excluded.captured_on,
+                page_height_px_at_1440 = coalesce(excluded.page_height_px_at_1440, hopper.note_links.page_height_px_at_1440),
+                page_title = coalesce(hopper.note_links.page_title, excluded.page_title)`;
   }
   return kept;
 }
@@ -627,9 +646,9 @@ Deno.serve(async (req: Request) => {
         let shotResult: any = null;
         if (wantShot) {
           const shot = await takeShot(url!);
-          shotResult = "error" in shot ? shot : { kept: await keepShots(n.id, shot), clipped: shot.clipped, full_height: shot.full_height };
+          shotResult = "error" in shot ? shot : { kept: await keepShots(n.id, shot, url!), clipped: shot.clipped, full_height: shot.full_height };
         }
-        if (url) await sql`insert into hopper.note_links (note_id, url, page_title) values (${n.id}, ${url}, ${title})`;
+        if (url) await sql`insert into hopper.note_links (note_id, url, page_title) values (${n.id}, ${url}, ${title}) on conflict (note_id, url) do nothing`;
         for (const [i, im] of images.entries()) {
           const path = `app/${n.id}/${i}.jpg`;
           const bytes = Uint8Array.from(atob(im.data), (c) => c.charCodeAt(0));
@@ -661,7 +680,8 @@ Deno.serve(async (req: Request) => {
         return json({ saved: { ...n, title: t }, filed, images: stored, image_urls_kept: fetched, screenshot: shotResult });
       }
       case "screenshot": {
-        // Add (or retake) page screenshots on an existing note with a link. Locked and binned notes are left alone.
+        // Add (or retake) page screenshots on an existing note: its own link, or { url } for another page of the same
+        // site (a case study, an about page), which is added to the note as a link. Locked and binned notes are left alone.
         const [n] = await sql`select id, is_locked, deleted_at from hopper.notes where id = ${b.id}`;
         if (!n || n.is_locked) return json({ error: "not available" }, 404);
         if (n.deleted_at) return IN_BIN();
@@ -670,7 +690,7 @@ Deno.serve(async (req: Request) => {
         if (!/^https?:\/\//i.test(url)) return json({ error: "this note has no web address" }, 400);
         const shot = await takeShot(url);
         if ("error" in shot) return json(shot, 502);
-        const kept = await keepShots(n.id, shot);
+        const kept = await keepShots(n.id, shot, url);
         return json({ ok: true, kept, clipped: shot.clipped, full_height: shot.full_height });
       }
       case "relink": {
