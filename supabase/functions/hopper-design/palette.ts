@@ -3,10 +3,12 @@
 // median-cut into up to 16 boxes,
 // merge boxes that look alike (CIE76 distance under 10), and keep colours covering at least 1%.
 import { decode } from "https://deno.land/x/imagescript@1.3.0/mod.ts";
+// imagescript has no WebP decoder, so WebP goes through libwebp compiled to WebAssembly.
+import decodeWebp from "npm:@jsquash/webp@1.4.0/decode.js";
 
 export type Swatch = { hex: string; share: number };
-// unsampled says why there is no palette: "large" (too many pixels to decode in time) or "format" (the decoder
-// can't read it: imagescript has no WebP decoder). Either way the image still gets a read, just without hex values.
+// unsampled says why there is no palette: "large" (too many pixels to decode in time) or "format" (no decoder could
+// read it). Either way the image still gets a read, just without hex values.
 export type Measured = { width: number; height: number; palette: Swatch[]; lightness: number | null; sampled: boolean; unsampled?: "large" | "format" };
 
 // Above this many pixels, decoding runs past the edge function's compute limit, so colours are not sampled.
@@ -88,15 +90,22 @@ function medianCut(px: Px[], boxes: number): Px[][] {
 export async function measure(bytes: Uint8Array): Promise<Measured> {
   const size = imageSize(bytes);
   if (size && size.width * size.height > MAX_PIXELS) return { ...size, palette: [], lightness: null, sampled: false, unsampled: "large" };
-  let img: any;
-  try { img = await decode(bytes); } catch (_) {
-    // WebP (and anything else imagescript can't decode): read it without a measured palette rather than not at all.
+  const isWebp = bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[8] === 0x57 && bytes[9] === 0x45;
+  let width: number, height: number, bm: Uint8ClampedArray;
+  try {
+    if (isWebp) {
+      const d = await decodeWebp(bytes.slice().buffer);
+      width = d.width; height = d.height; bm = d.data as Uint8ClampedArray;
+    } else {
+      const img: any = await decode(bytes);
+      width = img.width; height = img.height; bm = img.bitmap;
+    }
+  } catch (_) {
+    // Anything no decoder can read gets a read without a measured palette rather than none at all.
     // Without this, the sweep picks the same undecodable images first every time and stalls.
     return { ...(size ?? { width: 0, height: 0 }), palette: [], lightness: null, sampled: false, unsampled: "format" };
   }
-  const width = img.width, height = img.height;
   const step = Math.max(1, Math.ceil(Math.max(width, height) / 160));
-  const bm: Uint8ClampedArray = img.bitmap;
   const px: Px[] = [];
   for (let y = 0; y < height; y += step) {
     for (let x = 0; x < width; x += step) {
