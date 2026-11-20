@@ -1,12 +1,15 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.4";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 
 // Hopper's private API for the web app.
 // Every request must carry a Supabase Auth access token for the owner's email (hopper.settings 'owner_email').
 // Locked notes never return their body, summary or tags: only id, title, date and the lock.
 // POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin" | "event", ... }
-// "capture" also takes image_urls (fetched and kept by Hopper) and, from the invoke token only, source: "assistant".
+// "capture" also takes image_urls (fetched and kept by Hopper), screenshot (first screen and whole page of the url,
+// from the screenshot function on the Vercel app) and, from the invoke token only, source: "assistant".
+// "screenshot" { id } adds page screenshots to an existing note with a link (or replaces them).
 // "note" also returns the note's aesthetic tags and, for images judged design references, their design read.
 // Bin: "delete" moves a note to the Bin (deleted_at); the nightly hopper-bin job erases it after BIN_DAYS.
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
@@ -251,6 +254,49 @@ async function linkify(id: string, anySite = false) {
         tagged_at = null
       where id = ${id} and not is_locked`;
   }
+}
+
+// Page screenshots (hopper-shot): the Vercel app's /api/shot renders the page in headless Chrome and returns the
+// first screen (1440 x 900) and the whole page (cut at 8000 px) as JPEGs. The token is in Vault ('hopper_shot_token').
+type Shot = { first: string; full: string | null; width: number; height: number; full_height: number | null; clipped: boolean; title: string | null };
+async function takeShot(url: string): Promise<Shot | { error: string }> {
+  try {
+    const [cfg] = await sql`select (select value from hopper.settings where key = 'shot_url') as shot_url,
+      (select decrypted_secret from vault.decrypted_secrets where name = 'hopper_shot_token') as tok`;
+    if (!cfg?.shot_url || !cfg?.tok) return { error: "screenshots aren't set up" };
+    const r = await fetch(cfg.shot_url, {
+      method: "POST", signal: AbortSignal.timeout(75000),
+      headers: { "content-type": "application/json", "x-shot-token": cfg.tok },
+      body: JSON.stringify({ url }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.first) return { error: j.error ? `${j.error}${j.stage ? ` (${j.stage})` : ""}` : `screenshot ${r.status}` };
+    return j as Shot;
+  } catch (e) { return { error: `screenshot: ${String(e).slice(0, 120)}` }; }
+}
+
+// Store a page's screenshots on a note: first screen first (it becomes the card's picture on a new note), then the
+// whole page. original_file marks them, so taking them again replaces the files and clears their design reads.
+async function keepShots(noteId: string, shot: Shot) {
+  const parts: [string, string | null, string, number, number | null][] = [
+    ["first", shot.first, "First screen, 1440 wide", shot.width, shot.height],
+    ["full", shot.full, shot.clipped ? `Whole page, cut at 8000 px of ${shot.full_height}` : "Whole page", shot.width, shot.clipped ? 8000 : shot.full_height],
+  ];
+  let kept = 0;
+  for (const [kind, b64, caption, w, h] of parts) {
+    if (!b64) continue;
+    const bytes = decodeBase64(b64);
+    const path = `shot/${noteId}/${kind}.jpg`;
+    const { error } = await storage.upload(path, bytes, { contentType: "image/jpeg", upsert: true });
+    if (error) continue;
+    const size = pictureSize(bytes);
+    await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption)
+              values (${noteId}, ${"screenshot:" + kind}, ${path}, 'image/jpeg', ${size?.width ?? w}, ${size?.height ?? h}, ${caption})
+              on conflict (note_id, original_file) do update set storage_path = excluded.storage_path, width = excluded.width,
+                height = excluded.height, caption = excluded.caption, design_read = null`;
+    kept++;
+  }
+  return kept;
 }
 
 // Embed an app-captured note with the same recipe as hopper-embed (title, why saved, link, body),
@@ -562,6 +608,7 @@ Deno.serve(async (req: Request) => {
         const imageUrls: string[] = (Array.isArray(b.image_urls) ? b.image_urls : [])
           .map((u: unknown) => String(u ?? "").trim()).filter((u: string) => /^https?:\/\//i.test(u)).slice(0, 4 - images.length);
         if (!title && !text && !url && !why && !images.length && !imageUrls.length) return json({ error: "nothing to save" }, 400);
+        const wantShot = Boolean(b.screenshot) && Boolean(url) && /^https?:\/\//i.test(url ?? "");
         // Only trusted server-side callers (hopper-mcp) may mark a note as saved by Claude; everything else is the app.
         const source = user.email === "service" && b.source === "assistant" ? "assistant" : "app";
         const lock = Boolean(b.lock);
@@ -570,6 +617,12 @@ Deno.serve(async (req: Request) => {
           values (${source}, ${title}, ${text}, ${why}, ${lock}, ${lock ? "user" : null}, ${lock ? "Locked at capture" : null},
                   ${(images.length || imageUrls.length) && !url && !text ? "image" : null})
           returning id, created_at`;
+        // Screenshots first, so the first screen is the note's picture on the board.
+        let shotResult: any = null;
+        if (wantShot) {
+          const shot = await takeShot(url!);
+          shotResult = "error" in shot ? shot : { kept: await keepShots(n.id, shot), clipped: shot.clipped, full_height: shot.full_height };
+        }
         if (url) await sql`insert into hopper.note_links (note_id, url, page_title) values (${n.id}, ${url}, ${title})`;
         for (const [i, im] of images.entries()) {
           const path = `app/${n.id}/${i}.jpg`;
@@ -599,7 +652,20 @@ Deno.serve(async (req: Request) => {
         try { await sql`select hopper.tag_new(${n.id}::uuid)`; } catch (_) { /* the sweep picks it up */ }
         const [{ c: stored }] = await sql`select count(*)::int as c from hopper.attachments where note_id = ${n.id}`;
         const [{ t }] = await sql`select title as t from hopper.notes where id = ${n.id}`;
-        return json({ saved: { ...n, title: t }, filed, images: stored, image_urls_kept: fetched });
+        return json({ saved: { ...n, title: t }, filed, images: stored, image_urls_kept: fetched, screenshot: shotResult });
+      }
+      case "screenshot": {
+        // Add (or retake) page screenshots on an existing note with a link. Locked and binned notes are left alone.
+        const [n] = await sql`select id, is_locked, deleted_at from hopper.notes where id = ${b.id}`;
+        if (!n || n.is_locked) return json({ error: "not available" }, 404);
+        if (n.deleted_at) return IN_BIN();
+        const [link] = await sql`select url from hopper.note_links where note_id = ${n.id} order by url limit 1`;
+        const url = String(b.url ?? link?.url ?? "");
+        if (!/^https?:\/\//i.test(url)) return json({ error: "this note has no web address" }, 400);
+        const shot = await takeShot(url);
+        if ("error" in shot) return json(shot, 502);
+        const kept = await keepShots(n.id, shot);
+        return json({ ok: true, kept, clipped: shot.clipped, full_height: shot.full_height });
       }
       case "relink": {
         // Repair a note saved before links were recognised: linkify, re-embed and file if it has no projects.
