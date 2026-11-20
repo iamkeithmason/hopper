@@ -12,7 +12,10 @@ export type Swatch = { hex: string; share: number };
 export type Measured = { width: number; height: number; palette: Swatch[]; lightness: number | null; sampled: boolean; unsampled?: "large" | "format" };
 
 // Above this many pixels, decoding runs past the edge function's compute limit, so colours are not sampled.
-const MAX_PIXELS = 3_000_000;
+// libwebp (WebAssembly) decodes much faster than imagescript, so WebP gets a higher ceiling. Measured locally
+// on a worst-case noise image at 2880x1800 (5.2 MP): WebP about 310 ms, JPEG through imagescript about 500 ms.
+const MAX_PIXELS = 4_000_000;
+const MAX_PIXELS_WEBP = 8_000_000;
 
 // Width and height from a JPEG's frame header, without decoding it. Null if not found.
 export function jpegSize(b: Uint8Array): { width: number; height: number } | null {
@@ -89,8 +92,8 @@ function medianCut(px: Px[], boxes: number): Px[][] {
 
 export async function measure(bytes: Uint8Array): Promise<Measured> {
   const size = imageSize(bytes);
-  if (size && size.width * size.height > MAX_PIXELS) return { ...size, palette: [], lightness: null, sampled: false, unsampled: "large" };
   const isWebp = bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[8] === 0x57 && bytes[9] === 0x45;
+  if (size && size.width * size.height > (isWebp ? MAX_PIXELS_WEBP : MAX_PIXELS)) return { ...size, palette: [], lightness: null, sampled: false, unsampled: "large" };
   let width: number, height: number, bm: Uint8ClampedArray;
   try {
     if (isWebp) {

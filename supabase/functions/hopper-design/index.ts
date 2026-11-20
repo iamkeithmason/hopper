@@ -121,6 +121,10 @@ function contextText(a: any, m: { width: number; height: number; palette: { hex:
     const why = m.unsampled === "format" ? "Its colours could not be sampled" : "This image was too large to sample";
     parts.push(`Image size: ${m.width} x ${m.height}. ${why}, so there is no measured palette: leave palette empty and describe colour in colour_notes.`);
   }
+  // Full-page screenshots (hopper-shot) are many screens tall and reach the model scaled down.
+  if (m.width && m.height > m.width * 2.5) {
+    parts.push("This is a full-page screenshot of a website, top to bottom, shown scaled down. Read the page as a whole: section order and rhythm, how width is used (contained column, full-bleed bands), where images sit, the balance of text and imagery, and how the page ends. Don't strain to read small text.");
+  }
   return parts.join("\n");
 }
 

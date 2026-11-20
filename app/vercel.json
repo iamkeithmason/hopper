@@ -1,16 +1,51 @@
 {
   "cleanUrls": true,
   "rewrites": [
-    { "source": "/share", "destination": "/" },
-    { "source": "/n/:id", "destination": "/" },
-    { "source": "/oauth/consent", "destination": "/consent" }
+    {
+      "source": "/share",
+      "destination": "/"
+    },
+    {
+      "source": "/n/:id",
+      "destination": "/"
+    },
+    {
+      "source": "/oauth/consent",
+      "destination": "/consent"
+    }
   ],
   "headers": [
-    { "source": "/sw.js", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
-    { "source": "/(.*)", "headers": [
-      { "key": "X-Content-Type-Options", "value": "nosniff" },
-      { "key": "Referrer-Policy", "value": "same-origin" },
-      { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
-    ] }
-  ]
+    {
+      "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "same-origin"
+        },
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        }
+      ]
+    }
+  ],
+  "functions": {
+    "api/shot.js": {
+      "maxDuration": 60,
+      "memory": 2048
+    }
+  }
 }
