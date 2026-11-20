@@ -42,7 +42,7 @@ export default async function handler(req, res) {
   const width = Math.min(Math.max(Number(body.width) || 1440, 360), 1920);
   const height = Math.min(Math.max(Number(body.height) || 900, 600), 1400);
 
-  let browser;
+  let browser, stage = "launch";
   try {
     browser = await puppeteer.launch({
       args: await puppeteer.defaultArgs({ args: chromium.args, headless: "shell" }),
@@ -50,7 +50,9 @@ export default async function handler(req, res) {
       executablePath: await chromium.executablePath(),
       headless: "shell",
     });
+    stage = "load";
     const page = await browser.newPage();
+    page.on("error", (e) => console.error("page crashed", url, String(e)));
     // Many sites skip their entrance animations under reduced motion, so text isn't caught mid-fade.
     await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0 Safari/537.36 Hopper/1.0");
@@ -68,10 +70,12 @@ export default async function handler(req, res) {
     await page.waitForNetworkIdle({ idleTime: 500, timeout: 6000 }).catch(() => {});
     await new Promise((r) => setTimeout(r, 600));
 
+    stage = "first screen";
     const first = await page.screenshot({ type: "jpeg", quality: 82 });
 
     let full = null, fullHeight = null, clipped = false;
     if (body.full !== false) {
+      stage = "full page";
       // A full-page shot grows the viewport to the page's height, which stretches anything sized in vh
       // (a 100vh hero would fill the whole image). Pin such elements to their current pixel height first.
       fullHeight = await page.evaluate(() => {
@@ -106,7 +110,8 @@ export default async function handler(req, res) {
       status: resp?.status() ?? null,
     });
   } catch (e) {
-    return res.status(502).json({ error: String(e?.message ?? e).slice(0, 300) });
+    console.error("shot failed", stage, url, String(e?.message ?? e));
+    return res.status(502).json({ error: String(e?.message ?? e).slice(0, 300), stage });
   } finally {
     await browser?.close().catch(() => {});
   }
