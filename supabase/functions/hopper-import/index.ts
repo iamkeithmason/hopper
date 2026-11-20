@@ -3,7 +3,7 @@ import postgres from "npm:postgres@3.4.4";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 // Hopper import: a way in for images captured outside Hopper (for example the portfolio benchmark captures,
-// taken in a browser and handed over through Drive). Two steps:
+// taken in a browser and handed over through Drive). Three steps:
 //   1. POST { note_id } with the invoke token (in practice from the database, with hopper.call_fn, reading the
 //      answer from net._http_response). Returns a ticket: a random code that lets its holder upload images to
 //      import/<note_id>/ for two hours. Only its sha256 is kept (hopper.settings 'import_ticket:<hash>').
