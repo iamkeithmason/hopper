@@ -10,8 +10,10 @@ import { createHash } from "node:crypto";
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
 
-const MAX_FULL_HEIGHT = 12000; // taller pages are cut here (and say so): the image stays a sensible size
-const MAX_BYTES = 7_000_000;   // Hopper stores images up to 8 MB
+// The Claude API takes images up to 8000 px on a side and 5 MB, and the design read sends the stored image as is,
+// so the full-page shot stays inside both. Taller pages are cut at 8000 px (and the response says so).
+const MAX_FULL_HEIGHT = 8000;
+const MAX_BYTES = 4_800_000;
 
 chromium.setGraphicsMode = false;
 
@@ -59,7 +61,7 @@ export default async function handler(req, res) {
     // Scroll through once so lazy images and scroll-triggered sections load, then back to the top.
     await page.evaluate(async () => {
       const step = Math.max(400, Math.floor(window.innerHeight * 0.8));
-      const end = Math.min(document.documentElement.scrollHeight, 12000);
+      const end = Math.min(document.documentElement.scrollHeight, 8000);
       for (let y = 0; y < end; y += step) { window.scrollTo(0, y); await new Promise((r) => setTimeout(r, 120)); }
       window.scrollTo(0, 0);
     });
