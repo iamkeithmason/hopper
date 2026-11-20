@@ -760,43 +760,74 @@ async function shrink(blob) {
   return { data: btoa(bin), mime: "image/jpeg", width: w, height: h };
 }
 
+// Images on the capture sheet: the shared ones plus any Keith adds with the Image button, paste or drag
+// and drop (desktop screenshots: Win+Shift+S, then Ctrl+V). The server takes up to four per note.
+const MAX_IMAGES = 4;
 function openCapture(s = null) {
   state.share = s;
-  const shared = !!(s && (s.url || s.text || s.blobs?.length));
+  state.capShared = !!(s && (s.url || s.text || s.blobs?.length));
+  state.capImages = [...(s?.blobs || [])];
   $("c-title").value = s?.title || "";
   $("c-note").value = "";
-  $("c-note").placeholder = shared ? "Add a note, or why you saved it" : "Note";
+  $("c-note").placeholder = state.capShared ? "Add a note, or why you saved it" : "Note";
   $("c-lock").checked = false;
-  const pv = $("c-preview");
-  if (shared) {
-    let host = ""; try { host = new URL(s.url).hostname.replace(/^www\./, ""); } catch {}
-    const thumbs = (s.blobs || []).map((b) => el("img", { src: URL.createObjectURL(b), alt: "" }));
-    pv.replaceChildren(...[
-      thumbs.length ? el("div", { class: "p-imgs" }, ...thumbs) : null,
-      (s.url || s.text || s.title) ? el("div", { class: "p-text" }, el("div", { class: "p-title" }, s.title || host || (thumbs.length ? "Shared image" : "Shared text")), el("div", { class: "p-sub" }, s.url || s.text)) : null,
-    ].filter(Boolean));
-    pv.hidden = false;
-  } else pv.hidden = true;
+  renderCapturePreview();
   $("capture").hidden = false;
   requestAnimationFrame(() => { autosize($("c-title")); autosize($("c-note")); $("c-note").focus(); });
 }
-function closeCapture() { if (state.share?.blobs?.length) clearSharedImages(); $("capture").hidden = true; state.share = null; }
+function renderCapturePreview() {
+  const s = state.share, pv = $("c-preview");
+  for (const u of state.capUrls || []) URL.revokeObjectURL(u);
+  state.capUrls = state.capImages.map((b) => URL.createObjectURL(b));
+  const thumbs = state.capImages.map((b, i) => el("span", { class: "p-thumb" },
+    el("img", { src: state.capUrls[i], alt: "" }),
+    el("button", { type: "button", class: "p-drop", "aria-label": "Remove image", onclick: () => { state.capImages.splice(i, 1); renderCapturePreview(); } }, "✕")));
+  let host = ""; try { host = new URL(s?.url).hostname.replace(/^www\./, ""); } catch {}
+  const hasText = !!(s && (s.url || s.text || (state.capShared && s.title)));
+  pv.replaceChildren(...[
+    thumbs.length ? el("div", { class: "p-imgs" }, ...thumbs) : null,
+    hasText ? el("div", { class: "p-text" }, el("div", { class: "p-title" }, s.title || host || (thumbs.length ? "Shared image" : "Shared text")), el("div", { class: "p-sub" }, s.url || s.text)) : null,
+  ].filter(Boolean));
+  pv.hidden = !thumbs.length && !hasText;
+}
+function addCaptureImages(files) {
+  const imgs = [...files].filter((f) => f && f.type.startsWith("image/"));
+  if (!imgs.length) return false;
+  const room = MAX_IMAGES - state.capImages.length;
+  if (imgs.length > room) toast(`Up to ${MAX_IMAGES} images per note`);
+  state.capImages.push(...imgs.slice(0, Math.max(0, room)));
+  renderCapturePreview();
+  return true;
+}
+function closeCapture() {
+  if (state.share?.blobs?.length) clearSharedImages();
+  for (const u of state.capUrls || []) URL.revokeObjectURL(u);
+  $("capture").hidden = true; state.share = null; state.capImages = []; state.capUrls = [];
+}
 for (const id of ["c-title", "c-note"]) $(id).addEventListener("input", () => autosize($(id)));
 $("c-title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("c-note").focus(); } });
+$("c-file").addEventListener("change", (e) => { addCaptureImages(e.target.files); e.target.value = ""; });
+$("capture-form").addEventListener("paste", (e) => {
+  const files = [...(e.clipboardData?.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile());
+  if (addCaptureImages(files)) e.preventDefault();
+});
+$("capture-form").addEventListener("dragover", (e) => { if ([...e.dataTransfer.types].includes("Files")) { e.preventDefault(); $("capture-form").classList.add("dragging"); } });
+$("capture-form").addEventListener("dragleave", (e) => { if (!$("capture-form").contains(e.relatedTarget)) $("capture-form").classList.remove("dragging"); });
+$("capture-form").addEventListener("drop", (e) => { $("capture-form").classList.remove("dragging"); if (e.dataTransfer.files?.length) { e.preventDefault(); addCaptureImages(e.dataTransfer.files); } });
 $("new-btn").addEventListener("click", () => openCapture());
 $("capture-cancel").addEventListener("click", closeCapture);
 $("capture").addEventListener("click", (e) => { if (e.target.id === "capture") closeCapture(); });
 $("capture-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const s = state.share;
-  const shared = !!(s && (s.url || s.text || s.blobs?.length));
+  const shared = state.capShared, pics = state.capImages || [];
   const typed = $("c-note").value;
   const payload = { action: "capture", title: $("c-title").value, url: s?.url || "", lock: $("c-lock").checked,
     text: shared ? (s.text || "") : typed, note: shared ? typed : "" };
-  if (!payload.title.trim() && !payload.text.trim() && !payload.url && !payload.note.trim() && !s?.blobs?.length) { toast("Nothing to save yet"); return; }
+  if (!payload.title.trim() && !payload.text.trim() && !payload.url && !payload.note.trim() && !pics.length) { toast("Nothing to save yet"); return; }
   $("capture-save").disabled = true;
-  if (s?.blobs?.length) {
-    try { payload.images = await Promise.all(s.blobs.map(shrink)); }
+  if (pics.length) {
+    try { payload.images = await Promise.all(pics.map(shrink)); }
     catch { toast("Couldn't read the image"); $("capture-save").disabled = false; return; }
   }
   try {

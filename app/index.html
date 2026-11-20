@@ -22,6 +22,7 @@
   <symbol id="i-unarchive" viewBox="0 0 24 24"><path d="M20.5 5.2 19.1 3.5A1.5 1.5 0 0 0 18 3H6a1.5 1.5 0 0 0-1.2.5L3.5 5.2A2 2 0 0 0 3 6.5V19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6.5a2 2 0 0 0-.5-1.3zM6.2 5h11.6l.8 1H5.4zM5 19V8h14v11zm3-6h2.5v3h3v-3H16l-4-4z"/></symbol>
   <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 2a10 10 0 0 0 0 20 2.5 2.5 0 0 0 1.9-4.1.5.5 0 0 1 .4-.9H16a6 6 0 0 0 6-6c0-5-4.5-9-10-9zm4 13h-1.7a2.5 2.5 0 0 0-1.9 4.1.5.5 0 0 1-.4.9 8 8 0 1 1 0-16c4.4 0 8 3.1 8 7a4 4 0 0 1-4 4zM6.5 12a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm3-4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm5 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm3 4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><path d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 16H5V5h14zm-5.1-6.7-2.8 3.5-2-2.4L6 17h12z"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></symbol>
 </svg>
 
@@ -118,6 +119,7 @@
     <textarea id="c-note" class="quiet body" rows="3" placeholder="Note"></textarea>
     <div class="actions">
       <label class="lock-toggle"><input id="c-lock" type="checkbox"><svg><use href="#i-lock"/></svg><span>Lock</span></label>
+      <label class="lock-toggle" title="Add an image (or paste one)"><input id="c-file" type="file" accept="image/*" multiple><svg><use href="#i-image"/></svg><span>Image</span></label>
       <span class="spacer"></span>
       <button type="button" id="capture-cancel">Cancel</button>
       <button type="submit" class="primary" id="capture-save">Save</button>
