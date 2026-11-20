@@ -192,13 +192,14 @@ export default async function handler(req, res) {
     }
   }
   // The phone screen comes last and only while there's time left in the function's 60 seconds.
-  let phone = null;
+  let phone = null, phoneError = null;
   if (wantPhone && Date.now() - started < 38000) {
     const p = await capturePhone(url);
     phone = p.phone;
+    phoneError = p.error ?? null;
     r.title = r.title ?? p.title ?? null;
   }
-  if (!r.first && !phone) return res.status(502).json({ error: r.error ?? "no screenshot", stage: r.stage });
+  if (!r.first && !phone) return res.status(502).json({ error: r.error ?? phoneError ?? "no screenshot", stage: r.stage ?? (phoneError ? "phone" : undefined) });
   return res.status(200).json({
     first: r.first ? Buffer.from(r.first).toString("base64") : null,
     full: r.full ? Buffer.from(r.full).toString("base64") : null,
