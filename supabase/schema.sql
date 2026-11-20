@@ -10,6 +10,8 @@
 -- 20261119110000_hopper_capture_token (settings.capture_token_sha256; token in Vault).
 -- And 20261119090000_hopper_aesthetic_vocabulary (hopper.aesthetics, hopper.aesthetic_aliases,
 -- hopper.canonical_aesthetics) and 20261119093000_hopper_mcp_token (settings.mcp_token_sha256; token in Vault).
+-- 20261120134438_hopper_benchmark_pages: page context columns on attachments and note_links, and
+-- hopper.benchmark_scores (columns below are current as of 20 Nov 2026).
 --
 -- Extensions used (in schema extensions): vector, pg_net, pg_cron.
 -- Grants: every table and view here has access revoked from public, anon and authenticated.
@@ -65,7 +67,15 @@ create table hopper.attachments (
   caption text,
   text_in_image text,
   design_read jsonb,
+  image_role text,                        -- first-screen-1440, first-screen-390, full-page or figure
+  source_page_url text,                   -- the page the image was captured from
+  caption_on_page text,
+  rendered_width_at_1440 integer,
+  rendered_height_at_1440 integer,
+  position_from_top_px_at_1440 integer,
+  captured_on date,
   constraint attachments_pkey primary key (id),
+  constraint attachments_image_role_check check (image_role in ('first-screen-1440','first-screen-390','full-page','figure')),
   constraint attachments_note_id_original_file_key unique (note_id, original_file)
 );
 
@@ -86,6 +96,10 @@ create table hopper.note_links (
   fetched_at timestamp with time zone,
   is_dead boolean,
   fetch_status text,
+  page_height_px_at_1440 integer,
+  videos_on_page integer,
+  captured_on date,
+  layout_read jsonb,                      -- the page read as layout: first-screen UI share, widest figure, image treatment, motion
   constraint note_links_pkey primary key (id),
   constraint note_links_note_id_url_key unique (note_id, url),
   constraint note_links_fetch_status_check check (fetch_status in ('ok','dead','blocked','private','timeout','error','skipped')),
@@ -159,6 +173,27 @@ create table hopper.note_works (
   primary key (note_id, work_id)
 );
 
+-- Portfolio benchmark scores, copied from Notion's "Portfolio Benchmarks" (the source of truth; formulas stay there).
+create table hopper.benchmark_scores (
+  note_id uuid primary key references hopper.notes(id) on delete cascade,
+  name text not null,
+  site_url text not null,
+  scores_source text not null,           -- the Notion row
+  status text not null check (status in ('Reviewed', 'To review')),
+  rank_overall integer,                   -- among scored benchmarks, Keith's own row excluded; ties share a rank
+  overall numeric(3,2),
+  substance numeric(3,2),
+  presentation numeric(3,2),
+  visual_quality smallint check (visual_quality between 1 and 5),
+  shell_craft smallint check (shell_craft between 1 and 5),
+  work_legibility smallint check (work_legibility between 1 and 5),
+  contribution_clarity smallint check (contribution_clarity between 1 and 5),
+  leadership_evidence smallint check (leadership_evidence between 1 and 5),
+  outcome_evidence smallint check (outcome_evidence between 1 and 5),
+  scores_as_of date not null
+);
+alter table hopper.benchmark_scores enable row level security;
+
 -- Every tag change made in the app, kept as the signal for tuning the tagger.
 create table hopper.corrections (
   id bigint generated always as identity primary key,
@@ -201,6 +236,9 @@ create table hopper.settings (
 
 -- Indexes
 create index attachments_note_idx on hopper.attachments (note_id);
+create index attachments_role_idx on hopper.attachments (note_id, image_role);
+create index benchmark_scores_visual_idx on hopper.benchmark_scores (visual_quality desc nulls last);
+create index benchmark_scores_presentation_idx on hopper.benchmark_scores (presentation desc nulls last);
 create index note_links_note_idx on hopper.note_links (note_id);
 create index note_people_person_idx on hopper.note_people (person_id);
 create index note_projects_project_idx on hopper.note_projects (project_id);
