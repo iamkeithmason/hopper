@@ -257,8 +257,8 @@ async function linkify(id: string, anySite = false) {
 }
 
 // Page screenshots (hopper-shot): the Vercel app's /api/shot renders the page in headless Chrome and returns the
-// first screen (1440 x 900) and the whole page (cut at 8000 px) as JPEGs. The token is in Vault ('hopper_shot_token').
-type Shot = { first: string; full: string | null; width: number; height: number; full_height: number | null; clipped: boolean; title: string | null };
+// first screen (1440 x 900) and the whole page (scaled to fit 8000 px) as JPEGs. The token is in Vault ('hopper_shot_token').
+type Shot = { first: string; full: string | null; width: number; height: number; full_height: number | null; full_scale?: number; clipped: boolean; title: string | null };
 async function takeShot(url: string): Promise<Shot | { error: string }> {
   try {
     const [cfg] = await sql`select (select value from hopper.settings where key = 'shot_url') as shot_url,
@@ -275,12 +275,18 @@ async function takeShot(url: string): Promise<Shot | { error: string }> {
   } catch (e) { return { error: `screenshot: ${String(e).slice(0, 120)}` }; }
 }
 
+// Tall pages come back scaled down (to fit the 8000 px image limit), and past 40% cut short.
+function fullCaption(s: Shot) {
+  const pct = s.full_scale && s.full_scale < 1 ? `, at ${Math.round(s.full_scale * 100)}% size` : "";
+  return s.clipped ? `Top of the page${pct} (the page is ${s.full_height} px tall)` : `Whole page${pct}`;
+}
+
 // Store a page's screenshots on a note: first screen first (it becomes the card's picture on a new note), then the
 // whole page. original_file marks them, so taking them again replaces the files and clears their design reads.
 async function keepShots(noteId: string, shot: Shot) {
   const parts: [string, string | null, string, number, number | null][] = [
     ["first", shot.first, "First screen, 1440 wide", shot.width, shot.height],
-    ["full", shot.full, shot.clipped ? `Whole page, cut at 8000 px of ${shot.full_height}` : "Whole page", shot.width, shot.clipped ? 8000 : shot.full_height],
+    ["full", shot.full, fullCaption(shot), shot.width, shot.full_height],
   ];
   let kept = 0;
   for (const [kind, b64, caption, w, h] of parts) {

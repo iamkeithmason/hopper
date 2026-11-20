@@ -5,14 +5,16 @@
 // Auth: the x-shot-token header, checked by sha256 against SHOT_TOKEN_SHA256. The token itself lives only in
 // Supabase Vault ('hopper_shot_token'); this project holds just its hash.
 // POST { url, width?: 1440, height?: 900, full?: true }
-//   -> { first, full, width, height, full_height, clipped, title, final_url }  (images as base64 JPEG)
+//   -> { first, full, width, height, full_height, full_scale, clipped, title, final_url }  (images as base64 JPEG)
 import { createHash } from "node:crypto";
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
 
 // The Claude API takes images up to 8000 px on a side and 5 MB, and the design read sends the stored image as is,
-// so the full-page shot stays inside both. Taller pages are cut at 8000 px (and the response says so).
+// so the full-page shot stays inside both. Pages taller than 8000 px are shot scaled down (whole page, smaller), but
+// never below 40%: past that the page is cut instead, and the response says so.
 const MAX_FULL_HEIGHT = 8000;
+const MIN_SCALE = 0.4;
 const MAX_BYTES = 4_800_000;
 
 chromium.setGraphicsMode = false;
@@ -73,7 +75,7 @@ export default async function handler(req, res) {
     stage = "first screen";
     const first = await page.screenshot({ type: "jpeg", quality: 82 });
 
-    let full = null, fullHeight = null, clipped = false;
+    let full = null, fullHeight = null, clipped = false, scale = 1;
     if (body.full !== false) {
       stage = "full page";
       // A full-page shot grows the viewport to the page's height, which stretches anything sized in vh
@@ -92,10 +94,11 @@ export default async function handler(req, res) {
         }
         return Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0);
       });
-      clipped = fullHeight > MAX_FULL_HEIGHT;
-      const h = Math.min(fullHeight, MAX_FULL_HEIGHT);
+      scale = Math.max(Math.min(1, MAX_FULL_HEIGHT / fullHeight), MIN_SCALE);
+      const h = Math.min(fullHeight, Math.floor(MAX_FULL_HEIGHT / scale));
+      clipped = h < fullHeight;
       for (const quality of [72, 58, 45]) {
-        full = await page.screenshot({ type: "jpeg", quality, clip: { x: 0, y: 0, width, height: h }, captureBeyondViewport: true });
+        full = await page.screenshot({ type: "jpeg", quality, clip: { x: 0, y: 0, width, height: h, scale }, captureBeyondViewport: true });
         if (full.length <= MAX_BYTES) break;
       }
       if (full.length > MAX_BYTES) full = null;
@@ -104,7 +107,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       first: Buffer.from(first).toString("base64"),
       full: full ? Buffer.from(full).toString("base64") : null,
-      width, height, full_height: fullHeight, clipped,
+      width, height, full_height: fullHeight, full_scale: Math.round(scale * 100) / 100, clipped,
       title: await page.title().catch(() => null),
       final_url: page.url(),
       status: resp?.status() ?? null,

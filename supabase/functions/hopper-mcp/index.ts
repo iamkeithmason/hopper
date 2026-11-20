@@ -119,7 +119,7 @@ const TOOLS = [
         why_saved: { type: "string", description: "Why Keith is keeping it, in one line, e.g. 'Benchmark portfolio: calm editorial case studies, strong process imagery'." },
         text: { type: "string", description: "A quote or excerpt to keep as the note's text (up to 20,000 characters)." },
         image_urls: { type: "array", items: { type: "string" }, description: "Up to 4 direct image addresses from the page to keep as the note's pictures (JPEG, PNG, WebP or GIF, up to 8 MB each)." },
-        page_screenshot: { type: "boolean", description: "Also keep screenshots of the page itself: the first screen and the whole page (cut at 8000 px), at 1440 wide. Use for pages kept for their design or layout (default false)." },
+        page_screenshot: { type: "boolean", description: "Also keep screenshots of the page itself: the first screen and the whole page (scaled down to fit when very tall), at 1440 wide. Use for pages kept for their design or layout (default false)." },
         again: { type: "boolean", description: "Save even if this URL is already in Hopper (default false)." },
       },
     },
@@ -327,7 +327,7 @@ async function saveToHopper(a: any) {
   return [text({
     saved: true, id: j.saved.id, title: j.saved.title || undefined,
     images_kept: j.images ?? 0, images_requested: imageUrls.length,
-    page_screenshot: j.screenshot ? (j.screenshot.error ? `failed: ${j.screenshot.error}` : `${j.screenshot.kept} kept${j.screenshot.clipped ? `, whole page cut at 8000 of ${j.screenshot.full_height} px` : ""}`) : undefined,
+    page_screenshot: j.screenshot ? (j.screenshot.error ? `failed: ${j.screenshot.error}` : `${j.screenshot.kept} kept${j.screenshot.clipped ? `, page too tall to keep whole (${j.screenshot.full_height} px), so the top is kept` : ""}`) : undefined,
     filed_in: (j.filed ?? []).map((f: any) => f.project),
     next: "Searchable now. Over the next few minutes Hopper tags it, runs the sensitive check (which can lock it) and design-reads its images.",
   })];
