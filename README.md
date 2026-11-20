@@ -24,7 +24,7 @@ Live at <https://hopper-keith.vercel.app> (sign-in is limited to one email addre
 | `hopper-fetch` | Fetches page titles, text and thumbnails for links in notes. |
 | `hopper-embed` | Embeds notes with gte-small (384 dimensions) for search and related notes; `refresh` re-embeds after a design read. |
 | `hopper-design` | Design teardown of stored images (HOP-20): measured palette plus Claude's read of type, layout, aesthetics and how to borrow from it, saved to `attachments.design_read`. Aesthetic tags come from the shared vocabulary in `hopper.aesthetics`. Reads unlocked notes only. |
-| `hopper-mcp` | Read-only MCP server (HOP-18) so Claude can search Hopper and its design references from any chat: `search_references`, `get_reference` (with the image), `list_aesthetics`, `search_notes`, `get_note`, `list_projects`. Bearer token from Vault (`hopper_mcp_token`). |
+| `hopper-mcp` | MCP server (HOP-18) so Claude can search Hopper and its design references from any chat: `search_references`, `get_reference` (with the image), `list_aesthetics`, `search_notes`, `get_note`, `list_projects`, plus one append-only write, `save_to_hopper` (a URL, why-saved line, quote and up to 4 image addresses, which Hopper fetches and keeps; source `assistant`, duplicate URLs skipped, 60 saves an hour at most). OAuth, or a bearer token from Vault (`hopper_mcp_token`). |
 | `hopper-clip` | Gateway for the browser extension: checks the capture-only token (Vault `hopper_capture_token`) and passes captures to `hopper-api`. It can save but never read. |
 | `hopper-import-wp` | One-off import of the *On the Ruin of Britain* WordPress posts as notes. |
 

@@ -6,6 +6,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 // Every request must carry a Supabase Auth access token for the owner's email (hopper.settings 'owner_email').
 // Locked notes never return their body, summary or tags: only id, title, date and the lock.
 // POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin" | "event", ... }
+// "capture" also takes image_urls (fetched and kept by Hopper) and, from the invoke token only, source: "assistant".
 // "note" also returns the note's aesthetic tags and, for images judged design references, their design read.
 // Bin: "delete" moves a note to the Bin (deleted_at); the nightly hopper-bin job erases it after BIN_DAYS.
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
@@ -209,7 +210,8 @@ async function pageMeta(url: string): Promise<PageMeta> {
 }
 
 // Turn a bare-link note into a bookmark with its page details. Safe to run again on the same note.
-async function linkify(id: string) {
+// anySite: keep the page's preview image whatever the site (captures Claude makes for reference, where the page itself is the point).
+async function linkify(id: string, anySite = false) {
   const [n] = await sql`select id, title, body, why_saved, summary, is_locked from hopper.notes where id = ${id}`;
   if (!n || n.is_locked) return;
   let [link] = await sql`select id, url, page_title from hopper.note_links where note_id = ${id} limit 1`;
@@ -237,7 +239,7 @@ async function linkify(id: string) {
     where id = ${id}`;
   // A picture behind the link becomes the note's own image. Best-effort: the bookmark stands either way.
   let pic: Picture | null = m.picture ?? null;
-  if (!pic && m.image && pictureSite(url, m.url)) {
+  if (!pic && m.image && (anySite || pictureSite(url, m.url))) {
     let src = m.image; try { src = new URL(m.image, m.url).href; } catch (_) { /* use as given */ }
     pic = await fetchPicture(src, m.url);
   }
@@ -271,8 +273,8 @@ async function embedAndFile(id: string, refile: boolean) {
 }
 
 // Who can unlock a note in the app: Keith's own locks, and safety-check locks on notes he captured
-// himself (in the app, or clipped to Notion before Hopper existed).
-const OWN_CAPTURES = ["app", "notion-clip"];
+// himself (in the app, or clipped to Notion before Hopper existed), or asked Claude to save for him.
+const OWN_CAPTURES = ["app", "notion-clip", "assistant"];
 const canUnlock = (n: any) => n.lock_source === "user" || (OWN_CAPTURES.includes(n.source) && ["classifier", "pattern"].includes(n.lock_source));
 
 // Card fields for lists. Locked notes are reduced to title, date and the lock.
@@ -441,7 +443,7 @@ Deno.serve(async (req: Request) => {
             edited_at = now()
           where id = ${b.id}
           returning id, edited_at, format, keep_color, pinned, archived`;
-        if ((has("title") || has("body")) && n.source === "app") {
+        if ((has("title") || has("body")) && OWN_CAPTURES.includes(n.source)) {
           // Marked for a fresh Claude tagging pass; the sweep runs it once the note has been still for two minutes.
           await sql`update hopper.notes set tagged_at = null where id = ${n.id} and not is_locked`;
           const [{ c }] = await sql`select count(*)::int as c from hopper.note_projects where note_id = ${n.id}`;
@@ -555,12 +557,17 @@ Deno.serve(async (req: Request) => {
         // HOP-7: up to four shared images, already shrunk to JPEG by the app.
         const images = (Array.isArray(b.images) ? b.images : []).slice(0, 4)
           .filter((im: any) => typeof im?.data === "string" && im.data.length < 4_000_000);
-        if (!title && !text && !url && !why && !images.length) return json({ error: "nothing to save" }, 400);
+        // Image addresses for Hopper to fetch and keep (hopper-mcp's save tool: Claude can see a page's pictures but not hand over their bytes).
+        const imageUrls: string[] = (Array.isArray(b.image_urls) ? b.image_urls : [])
+          .map((u: unknown) => String(u ?? "").trim()).filter((u: string) => /^https?:\/\//i.test(u)).slice(0, 4 - images.length);
+        if (!title && !text && !url && !why && !images.length && !imageUrls.length) return json({ error: "nothing to save" }, 400);
+        // Only trusted server-side callers (hopper-mcp) may mark a note as saved by Claude; everything else is the app.
+        const source = user.email === "service" && b.source === "assistant" ? "assistant" : "app";
         const lock = Boolean(b.lock);
         const [n] = await sql`
           insert into hopper.notes (source, title, body, why_saved, is_locked, lock_source, lock_reason, format)
-          values ('app', ${title}, ${text}, ${why}, ${lock}, ${lock ? "user" : null}, ${lock ? "Locked at capture" : null},
-                  ${images.length && !url && !text ? "image" : null})
+          values (${source}, ${title}, ${text}, ${why}, ${lock}, ${lock ? "user" : null}, ${lock ? "Locked at capture" : null},
+                  ${(images.length || imageUrls.length) && !url && !text ? "image" : null})
           returning id, created_at`;
         if (url) await sql`insert into hopper.note_links (note_id, url, page_title) values (${n.id}, ${url}, ${title})`;
         for (const [i, im] of images.entries()) {
@@ -571,12 +578,27 @@ Deno.serve(async (req: Request) => {
           await sql`insert into hopper.attachments (note_id, storage_path, mime, width, height)
                     values (${n.id}, ${path}, 'image/jpeg', ${Number(im.width) || null}, ${Number(im.height) || null})`;
         }
-        try { await linkify(n.id); } catch (_) { /* the note is saved either way */ }
+        let fetched = 0;
+        for (const [i, src] of imageUrls.entries()) {
+          const p = await fetchPicture(src, url ?? undefined);
+          if (!p) continue;
+          const path = `link/${n.id}/${images.length + i}.${IMAGE_TYPES[p.mime]}`;
+          const { error } = await storage.upload(path, p.bytes, { contentType: p.mime, upsert: true });
+          if (error) continue;
+          const size = pictureSize(p.bytes);
+          const rows = await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height)
+                    values (${n.id}, ${p.source}, ${path}, ${p.mime}, ${size?.width ?? null}, ${size?.height ?? null})
+                    on conflict (note_id, original_file) do nothing returning id`;
+          fetched += rows.length;
+        }
+        try { await linkify(n.id, source === "assistant"); } catch (_) { /* the note is saved either way */ }
         let filed: any[] = [];
         try { filed = await embedAndFile(n.id, true); } catch (_) { /* filing is best-effort; the note is saved either way */ }
         // Claude tagging runs in the background once filing is done (HOP-5); it does nothing while auto_tag is off.
         try { await sql`select hopper.tag_new(${n.id}::uuid)`; } catch (_) { /* the sweep picks it up */ }
-        return json({ saved: n, filed });
+        const [{ c: stored }] = await sql`select count(*)::int as c from hopper.attachments where note_id = ${n.id}`;
+        const [{ t }] = await sql`select title as t from hopper.notes where id = ${n.id}`;
+        return json({ saved: { ...n, title: t }, filed, images: stored, image_urls_kept: fetched });
       }
       case "relink": {
         // Repair a note saved before links were recognised: linkify, re-embed and file if it has no projects.
