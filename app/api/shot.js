@@ -32,18 +32,30 @@ function allowed(raw) {
   return true;
 }
 
+// Two requests on one warm instance can race to unpack Chrome ("spawn ETXTBSY"). Wait and launch again.
+async function launch(width, height) {
+  for (let i = 0; ; i++) {
+    try {
+      return await puppeteer.launch({
+        args: await puppeteer.defaultArgs({ args: chromium.args, headless: "shell" }),
+        defaultViewport: { width, height, deviceScaleFactor: 1 },
+        executablePath: await chromium.executablePath(),
+        headless: "shell",
+      });
+    } catch (e) {
+      if (i >= 3 || !/ETXTBSY|EBUSY/.test(String(e?.message ?? e))) throw e;
+      await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+    }
+  }
+}
+
 // One attempt at a page. lite (the retry after a crash) skips the scroll-through and keeps the whole-page shot
 // to half size or less, which needs far less memory on image-heavy pages.
 export async function capture(url, width, height, wantFull, lite) {
   let browser, stage = "launch";
   const out = { first: null, full: null, fullHeight: null, clipped: false, scale: 1, title: null, finalUrl: url, status: null };
   try {
-    browser = await puppeteer.launch({
-      args: await puppeteer.defaultArgs({ args: chromium.args, headless: "shell" }),
-      defaultViewport: { width, height, deviceScaleFactor: 1 },
-      executablePath: await chromium.executablePath(),
-      headless: "shell",
-    });
+    browser = await launch(width, height);
     stage = "load";
     const page = await browser.newPage();
     page.on("error", (e) => console.error("page crashed", url, String(e)));
