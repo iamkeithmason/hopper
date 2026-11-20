@@ -107,9 +107,10 @@ async function readPicture(r: Response, source: string): Promise<Picture | null>
   return bytes.length && bytes.length <= MAX_IMAGE ? { bytes, mime, source } : null;
 }
 
+// Never ask for AVIF: image CDNs (Next.js, Cloudinary) serve it when asked, and Hopper can't store or read it.
 async function fetchPicture(url: string, referer?: string): Promise<Picture | null> {
   try {
-    const headers: Record<string, string> = { "user-agent": UA, accept: "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8" };
+    const headers: Record<string, string> = { "user-agent": UA, accept: "image/webp,image/png,image/jpeg,image/gif;q=0.9,image/*;q=0.5" };
     if (referer) headers.referer = referer;
     const r = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(8000), headers });
     return await readPicture(r, url);
