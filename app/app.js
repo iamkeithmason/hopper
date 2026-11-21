@@ -465,9 +465,25 @@ function paletteStrip(palette) {
 // Images saved on their own (not screenshots or figures of a captured page). Captured pages get their own sections.
 const SHOT_ROLES = ["first-screen-1440", "first-screen-390", "full-page"];
 const standalone = (n) => (n.images || []).filter((i) => !i.page || !(n.links || []).some((l) => l.url === i.page));
+// A note with captured pages leads with the pages; images saved before the capture follow them, compact, as figures do.
+const hasPages = (n) => (n.links || []).some((l) => l.page_read) || (n.images || []).some((i) => SHOT_ROLES.includes(i.role));
+const topImages = (n) => (hasPages(n) ? [] : standalone(n).filter((i) => i.url));
+
+function otherImages(n) {
+  if (!hasPages(n)) return null;
+  const imgs = standalone(n).filter((i) => i.url);
+  if (!imgs.length) return null;
+  return el("details", { class: "dn-more pg-figs other-images" },
+    el("summary", {}, `Other images on this note (${imgs.length})`),
+    imgs.map((f) => el("div", { class: "pg-fig" },
+      el("a", { href: f.url, target: "_blank", rel: "noopener" }, el("img", { src: f.url, alt: f.caption || "", loading: "lazy" })),
+      el("div", {},
+        f.design?.summary ? el("p", {}, f.design.summary) : null,
+        f.design?.moves?.length ? el("div", { class: "chips" }, f.design.moves.map((m) => el("span", { class: "chip" }, m))) : null))));
+}
 
 function designNotes(n) {
-  const reads = standalone(n).map((i) => i.design).filter((d) => d && !d.light);
+  const reads = hasPages(n) ? [] : standalone(n).map((i) => i.design).filter((d) => d && !d.light);
   if (!reads.length) return null;
   const row = (label, value) => {
     const v = Array.isArray(value) ? value.filter(Boolean).join(", ") : value;
@@ -634,7 +650,7 @@ async function openNote(id, push = true) {
     if (n.deleted_at) { title.readOnly = true; bodyBox.readOnly = true; }
     body.replaceChildren(...[
       binBar,
-      standalone(n).some((i) => i.url) ? el("div", { class: "d-images" }, standalone(n).filter((i) => i.url).map((i) => el("img", { src: i.url, alt: i.caption || "" }))) : null,
+      topImages(n).length ? el("div", { class: "d-images" }, topImages(n).map((i) => el("img", { src: i.url, alt: i.caption || "" }))) : null,
       designNotes(n),
       title,
       n.deleted_at ? null : Object.assign(chipsFor(n), { id: "d-chips" }),
@@ -643,6 +659,7 @@ async function openNote(id, push = true) {
       (!hasList || n.body) ? bodyBox : null,
       // Captured pages after Keith's own note: each is long, and his title, tags and why-saved line come first.
       ...capturedPages(n),
+      otherImages(n),
       fromPage(n),
       related?.length ? el("h3", {}, "Related in your Hopper") : null,
       related?.length ? el("div", { class: "related" }, related.map(card)) : null,

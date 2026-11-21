@@ -177,10 +177,14 @@ const text = (o: unknown) => ({ type: "text", text: typeof o === "string" ? o : 
 // from the shared vocabulary; reads from before the vocabulary carry older free-form tags, so they are left out here.
 const SHOTS = ["first-screen-1440", "first-screen-390", "full-page"];
 
-function brief(d: any, img?: any) {
+// On a note with captured pages, an image saved before the capture (no role) is shown like a figure: the page read
+// carries palette, type, how to borrow and relevance_to_owner, so the image's own copies would only repeat it.
+const compact = (d: any, img: any, paged?: boolean) => d.light || (paged && img && !img.image_role);
+
+function brief(d: any, img?: any, paged?: boolean) {
   // Screenshots of a page are read as the page (see the page's page_read), so they show only where they sit.
   if (!d || (img && SHOTS.includes(img.image_role))) return img ? context(img) : null;
-  if (d.light) return { ...(img ? context(img) : {}), kind: d.kind, summary: d.summary, moves: d.moves?.length ? d.moves : undefined,
+  if (compact(d, img, paged)) return { ...(img ? context(img) : {}), kind: d.kind, summary: d.summary, moves: d.moves?.length ? d.moves : undefined,
     move_notes: d.move_notes || undefined, annotations: d.annotations || undefined };
   return {
     ...(img ? context(img) : {}),
@@ -195,9 +199,10 @@ function brief(d: any, img?: any) {
     relevance_to_owner: d.relevance_to_owner || undefined,
   };
 }
-function full(d: any, img?: any) {
+function full(d: any, img?: any, paged?: boolean) {
   if (img && SHOTS.includes(img.image_role)) return { ...context(img), read: "read as part of its page: see page_read on the page's link" };
   if (!d) return img ? { ...context(img), read: "not read yet" } : null;
+  if (compact(d, img, paged)) return brief(d, img, paged);
   const { v: _v, model: _m, read_at: _r, measured, aesthetics: _a, ...rest } = d;
   return { ...(img ? context(img) : {}), ...rest, size: measured ? `${measured.width} x ${measured.height}` : undefined };
 }
@@ -259,7 +264,7 @@ async function searchReferences(a: any) {
     id: r.id, title: r.title || undefined, why_saved: r.why_saved || undefined, aesthetics: r.aesthetics,
     score: r.score == null ? undefined : Math.round(r.score * 1000) / 1000, link: r.link || undefined,
     pages: r.pages?.length ? r.pages.map((x: any) => ({ url: x.url, ...pageRead(x.read) })) : undefined,
-    reads: r.reads?.length ? r.reads.map((x: any) => brief(x.read, x.img)) : undefined,
+    reads: r.reads?.length ? r.reads.map((x: any) => brief(x.read, x.img, !!r.pages?.length)) : undefined,
   })))];
 }
 
@@ -280,7 +285,7 @@ async function getReference(a: any) {
   const out: any[] = [text({
     id: n.id, title: n.title || undefined, why_saved: n.why_saved || undefined, summary: n.summary || undefined,
     aesthetics: n.aesthetics, saved: day(n.created_at), links, benchmark: bench,
-    images: atts.map((x: any) => full(x.design_read, x)),
+    images: atts.map((x: any) => full(x.design_read, x, links.some((l: any) => l.page_read))),
   })];
   if (a.images !== false) {
     const url = Deno.env.get("SUPABASE_URL"), key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -362,7 +367,7 @@ async function getNote(a: any) {
     checklist: n.list_items ?? undefined, saved: day(n.created_at),
     projects: group("project"), topics: group("topic"), people: group("person"), works: group("work"),
     aesthetics: n.aesthetics, links, benchmark: bench,
-    images: atts.length ? atts.map((x: any) => brief(x.design_read, x)) : undefined,
+    images: atts.length ? atts.map((x: any) => brief(x.design_read, x, links.some((l: any) => l.page_read))) : undefined,
   })];
 }
 
@@ -530,7 +535,7 @@ async function handle(msg: any) {
       return ok({
         protocolVersion: typeof params?.protocolVersion === "string" ? params.protocolVersion : PROTOCOL,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "hopper", title: "Hopper", version: "1.6.0" },
+        serverInfo: { name: "hopper", title: "Hopper", version: "1.6.1" },
         instructions: INSTRUCTIONS,
       });
     case "ping":

@@ -323,7 +323,8 @@ async function readOne(a: any, model: string, key: string, ctx: Ctx) {
     read.typography.classification = (read.typography.classification ?? []).slice(0, 4);
     read.typography.likely_families = (read.typography.likely_families ?? []).slice(0, 4);
   }
-  if (read.is_reference && a.why_saved) {
+  // A note with captured pages gets relevance_to_owner once, on each page read; its other images skip it.
+  if (read.is_reference && a.why_saved && !a.has_pages) {
     const rel = await relevance(read, String(a.why_saved), key);
     if (rel) read.relevance_to_owner = rel;
   }
@@ -486,7 +487,9 @@ Deno.serve(async (req: Request) => {
     const pages = body.images_only === true ? [] : await pendingPages(ids, redo && body.pages === true, 1);
     const atts = pages.length ? [] : await sql`
       select a.id, a.note_id, a.storage_path, a.mime, n.why_saved,
-        a.image_role, a.rendered_width_at_1440, a.rendered_height_at_1440, a.caption_on_page
+        a.image_role, a.rendered_width_at_1440, a.rendered_height_at_1440, a.caption_on_page,
+        exists (select 1 from hopper.attachments s where s.note_id = a.note_id
+                and s.image_role in ('first-screen-1440', 'first-screen-390', 'full-page')) as has_pages
       from hopper.attachments a join hopper.notes_for_ai n on n.id = a.note_id
       where a.storage_path is not null and n.tagged_at is not null and ${sql.unsafe(PER_IMAGE)}
         and (${ids}::uuid[] is null or a.note_id = any(${ids}::uuid[]))
