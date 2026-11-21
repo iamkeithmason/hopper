@@ -46,9 +46,13 @@ Deno.serve(async (req: Request) => {
     const refresh = body.refresh === true && ids !== null;
     const notes = await sql`
       select n.id, n.title, n.summary, n.body, n.aesthetics,
-        (select string_agg(concat_ws('. ', a.design_read->>'summary', a.design_read->>'kind',
+        concat_ws(' | ',
+          -- Page reads first (captured pages are judged as pages), then single images and figures.
+          (select string_agg(l.layout_read->>'summary', ' | ') from hopper.note_links l where l.note_id = n.id and l.layout_read ? 'summary'),
+          (select string_agg(concat_ws('. ', a.design_read->>'summary', a.design_read->>'kind',
                   array_to_string(array(select jsonb_array_elements_text(a.design_read->'good_reference_for')), ', ')), ' | ')
-           from hopper.attachments a where a.note_id = n.id and (a.design_read->>'is_reference')::boolean) as design,
+             from hopper.attachments a where a.note_id = n.id and (a.design_read->>'is_reference')::boolean
+               and (a.image_role is null or a.image_role = 'figure'))) as design,
         (select string_agg(i->>'text', '; ') from jsonb_array_elements(case when jsonb_typeof(n.list_items) = 'array' then n.list_items else '[]'::jsonb end) i) as list_text,
         (select array_agg(t.name) from hopper.note_topics nt join hopper.topics t on t.id = nt.topic_id where nt.note_id = n.id) as topics,
         (select array_agg(p.name) from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = n.id) as people,
