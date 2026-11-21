@@ -12,7 +12,8 @@
 -- hopper.canonical_aesthetics) and 20261119093000_hopper_mcp_token (settings.mcp_token_sha256; token in Vault).
 -- 20261120134438_hopper_benchmark_pages: page context columns on attachments and note_links, and
 -- hopper.benchmark_scores (columns below are current as of 20 Nov 2026).
--- 20261120190000_hopper_moves: hopper.moves (visual move vocabulary) and attachments.moves.
+-- 20261120225027_hopper_moves: hopper.moves (visual move vocabulary) and attachments.moves.
+-- 20261121091324_hopper_page_reads: design_sweep also runs for captured pages waiting for a page read (note_links.layout_read).
 --
 -- Extensions used (in schema extensions): vector, pg_net, pg_cron.
 -- Grants: every table and view here has access revoked from public, anon and authenticated.
@@ -101,7 +102,7 @@ create table hopper.note_links (
   page_height_px_at_1440 integer,
   videos_on_page integer,
   captured_on date,
-  layout_read jsonb,                      -- the page read as layout: first-screen UI share, widest figure, image treatment, motion
+  layout_read jsonb,                      -- the page read (hopper-design): first screen, structure, width, image treatment, moves, strengths, gaps
   constraint note_links_pkey primary key (id),
   constraint note_links_note_id_url_key unique (note_id, url),
   constraint note_links_fetch_status_check check (fetch_status in ('ok','dead','blocked','private','timeout','error','skipped')),
