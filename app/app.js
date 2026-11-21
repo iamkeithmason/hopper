@@ -549,6 +549,7 @@ function capturedPages(n) {
       el("img", { src: i.url, alt: label, loading: "lazy" }), el("span", {}, label)) : null;
     return el("section", { class: "captured-page" },
       el("div", { class: "pg-head" },
+        el("span", { class: "pg-kicker" }, "Captured page"),
         el("a", { class: "p-link", href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.page_title && !/^https?:/.test(l.page_title) ? l.page_title : pathOf(l.url), " ↗"),
         el("span", { class: "p-host" }, [pathOf(l.url), l.page_height_px_at_1440 ? `${px(l.page_height_px_at_1440)} tall` : null,
           l.videos_on_page ? `${l.videos_on_page} video${l.videos_on_page === 1 ? "" : "s"}` : null,
@@ -635,12 +636,13 @@ async function openNote(id, push = true) {
       binBar,
       standalone(n).some((i) => i.url) ? el("div", { class: "d-images" }, standalone(n).filter((i) => i.url).map((i) => el("img", { src: i.url, alt: i.caption || "" }))) : null,
       designNotes(n),
-      ...capturedPages(n),
       title,
       n.deleted_at ? null : Object.assign(chipsFor(n), { id: "d-chips" }),
       n.why_saved ? el("p", { class: "why-line" }, n.why_saved) : null,
       hasList ? el("ul", { class: "list-items" }, n.list_items.map((i) => el("li", {}, i.checked ? "☑ " : "☐ ", i.text))) : null,
       (!hasList || n.body) ? bodyBox : null,
+      // Captured pages after Keith's own note: each is long, and his title, tags and why-saved line come first.
+      ...capturedPages(n),
       fromPage(n),
       related?.length ? el("h3", {}, "Related in your Hopper") : null,
       related?.length ? el("div", { class: "related" }, related.map(card)) : null,

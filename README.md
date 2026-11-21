@@ -8,7 +8,7 @@ Live at <https://hopper-keith.vercel.app> (sign-in is limited to one email addre
 
 | Folder | What it is |
 |---|---|
-| `app/` | The PWA: plain HTML, CSS and JavaScript, no build step. Installable on Android, with a share target at `/share`. `/oauth/consent` is the OAuth consent page for MCP clients. `app/api/shot.js` is the one server function: page screenshots (see below). |
+| `app/` | The PWA: plain HTML, CSS and JavaScript, no build step. Installable on Android, with a share target at `/share`. `/oauth/consent` is the OAuth consent page for MCP clients. `app/api/shot.js` is the one server function: page screenshots (see below). A note's captured pages each get a section after the note's own text: desktop and phone first screens as thumbnails, the whole page as one continuous image in a scroll frame, the page read, and the page's figures folded away by position. |
 | `extension/` | Chrome/Brave extension (HOP-8): save pages, images, quotes and screenshots. Load unpacked; see its README. |
 | `supabase/functions/` | Edge functions (Deno) for the Supabase project. |
 | `supabase/schema.sql` | Reference snapshot of the `hopper` schema. |
