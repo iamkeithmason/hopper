@@ -185,6 +185,23 @@ main { padding: 6px 8px 40px; }
 .dn-row { display: grid; grid-template-columns: 7.5em 1fr; gap: 10px; font-size: 14px; }
 .dn-row dt { color: var(--soft); }
 .dn-row dd { margin: 0; }
+/* Captured pages: one section a page, the whole page as one image in a scroll frame. */
+.captured-page { margin: 18px 0 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.pg-head { display: grid; gap: 2px; margin-bottom: 10px; }
+.pg-thumbs { display: grid; grid-template-columns: 3fr 1fr; gap: 8px; align-items: start; margin-bottom: 8px; }
+.pg-thumb { display: grid; gap: 4px; color: var(--soft); font-size: 12px; text-decoration: none; }
+.pg-thumb img { width: 100%; border-radius: 8px; box-shadow: 0 0 0 1px var(--line); display: block; }
+.pg-whole { max-height: 70vh; overflow-y: auto; border-radius: 10px; box-shadow: 0 0 0 1px var(--line); overscroll-behavior: contain; }
+.pg-whole img { width: 100%; display: block; margin: 0; }
+.pg-whole:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.pg-note { font-size: 12px; color: var(--soft); margin: 6px 0 12px; }
+.pg-read .chips { margin: 0 0 10px; }
+.pg-first { margin: 0 0 10px; } .pg-first p { margin: 0 0 4px; }
+.pg-list { margin: 0 0 10px; } .pg-list ul { margin: 0; padding-left: 18px; } .pg-list li { margin: 2px 0; }
+.pg-figs { margin-top: 8px; }
+.pg-fig { display: grid; grid-template-columns: 120px 1fr; gap: 10px; margin: 10px 0; font-size: 14px; }
+.pg-fig img { width: 100%; border-radius: 6px; box-shadow: 0 0 0 1px var(--line); display: block; }
+.pg-fig p { margin: 0 0 4px; } .pg-fig .chips { margin: 4px 0 0; }
 .list-items { list-style: none; padding: 0; margin: 6px 0; } .list-items li { padding: 3px 0; }
 
 .tag-list { display: grid; gap: 2px; }

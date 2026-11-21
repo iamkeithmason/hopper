@@ -413,9 +413,22 @@ function withShares(d: any) {
   return (d.palette ?? []).map((p: any) => ({ ...p, share: p.share ?? share.get(String(p.hex).toLowerCase()) ?? null }));
 }
 
+// The page read (hopper-design, on the page's link) as the note page shows it. Older hand-written layout reads have no v.
+function pageReadFor(r: any) {
+  if (!r?.v) return null;
+  return {
+    summary: r.summary, first_screen: r.first_screen, phone: r.phone, structure: r.structure, width_use: r.width_use,
+    image_treatment: r.image_treatment, type_and_colour: r.type_and_colour, palette: r.palette ?? [], moves: r.moves ?? [],
+    move_notes: r.move_notes || null, motion: r.motion || null, strengths: r.strengths ?? [], gaps: r.gaps ?? [],
+    borrow: r.how_to_borrow || null, read_at: r.read_at,
+  };
+}
+
 // The design read (from hopper-design) as the note page shows it: only for images judged design references.
+// A figure's light read has only a summary, moves and annotations.
 function designFor(d: any) {
   if (!d?.is_reference) return null;
+  if (d.light) return { light: true, kind: d.kind, summary: d.summary, moves: d.moves ?? [], annotations: d.annotations || null };
   return {
     kind: d.kind, summary: d.summary, palette: withShares(d), colour_notes: d.colour_notes || null,
     type: d.typography?.classification ?? [], families: (d.typography?.likely_families ?? []).map((f: any) => f.name),
@@ -514,8 +527,12 @@ Deno.serve(async (req: Request) => {
           union all select 'topic', t.name, nt.confidence, null, null, null from hopper.note_topics nt join hopper.topics t on t.id = nt.topic_id where nt.note_id = ${n.id}
           union all select 'person', p.name, np.confidence, np.confirmed, null, null from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = ${n.id}
           union all select 'work', w.title, nw.confidence, null, null, null from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = ${n.id}`;
-        const links = await sql`select url, page_title, page_text, thumbnail_url from hopper.note_links where note_id = ${n.id}`;
-        const atts = await sql`select storage_path, caption, design_read from hopper.attachments where note_id = ${n.id} order by id`;
+        const links = await sql`select url, page_title, page_text, thumbnail_url, captured_on, page_height_px_at_1440, videos_on_page, layout_read
+                                from hopper.note_links where note_id = ${n.id} order by (layout_read is null), url`;
+        const atts = await sql`select storage_path, caption, design_read, image_role, source_page_url, position_from_top_px_at_1440,
+                                 rendered_width_at_1440, caption_on_page
+                               from hopper.attachments where note_id = ${n.id}
+                               order by source_page_url nulls first, position_from_top_px_at_1440 nulls first, id`;
         const urls = await signed(atts.map((a: any) => a.storage_path));
         const related = await sql`
           select n.*, 1 - (e2.embedding <=> e1.embedding) as score
@@ -529,7 +546,12 @@ Deno.serve(async (req: Request) => {
             list_items: n.list_items, why_saved: n.why_saved, created_at: n.created_at, source: n.source,
             pinned: n.pinned, archived: n.archived, color: n.keep_color, edited_at: n.edited_at, ...bin,
             aesthetics: n.aesthetics ?? [],
-            tags, links, images: atts.map((a: any) => ({ url: urls[a.storage_path] ?? null, caption: a.caption, design: designFor(a.design_read) })),
+            tags,
+            links: links.map(({ layout_read, ...l }: any) => ({ ...l, page_read: pageReadFor(layout_read) })),
+            // Each image says where it came from: a page's screenshot (first screens, whole page) or figure, or neither.
+            images: atts.map((a: any) => ({ url: urls[a.storage_path] ?? null, caption: a.caption, design: designFor(a.design_read),
+              role: a.image_role ?? null, page: a.source_page_url ?? null, top: a.position_from_top_px_at_1440 ?? null,
+              width_at_1440: a.rendered_width_at_1440 ?? null, caption_on_page: a.caption_on_page ?? null })),
           },
           related: await cards(related),
         });

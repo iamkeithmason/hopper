@@ -462,8 +462,12 @@ function paletteStrip(palette) {
     }));
   return el("div", { class: "palette" }, strip, label);
 }
+// Images saved on their own (not screenshots or figures of a captured page). Captured pages get their own sections.
+const SHOT_ROLES = ["first-screen-1440", "first-screen-390", "full-page"];
+const standalone = (n) => (n.images || []).filter((i) => !i.page || !(n.links || []).some((l) => l.url === i.page));
+
 function designNotes(n) {
-  const reads = (n.images || []).map((i) => i.design).filter(Boolean);
+  const reads = standalone(n).map((i) => i.design).filter((d) => d && !d.light);
   if (!reads.length) return null;
   const row = (label, value) => {
     const v = Array.isArray(value) ? value.filter(Boolean).join(", ") : value;
@@ -491,6 +495,80 @@ function designNotes(n) {
           row("Mood", [d.mood.join(", "), d.era]),
           row("Good for", d.good_for),
           row("Kind", d.kind))))));
+}
+
+// A captured page (portfolio case study and the like), one section each: the page link, the desktop and phone first
+// screens as small thumbnails, the whole page as one continuous image in a scroll box (its slices stacked edge to
+// edge), then the page read, and the page's figures folded away with where each sits on the page.
+const pathOf = (u) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, "") + x.pathname).replace(/\/$/, ""); } catch { return u; } };
+const px = (v) => `${Number(v).toLocaleString("en-GB")} px`;
+
+function pageRead(r) {
+  if (!r) return el("p", { class: "muted pg-pending" }, "Page read on its way: Hopper reads captured pages in the background.");
+  const row = (label, value) => {
+    const v = Array.isArray(value) ? value.filter(Boolean).join(", ") : value;
+    return v ? el("div", { class: "dn-row" }, el("dt", {}, label), el("dd", {}, v)) : null;
+  };
+  const list = (label, items) => items?.length ? el("div", { class: "pg-list" }, el("p", { class: "dn-label" }, label),
+    el("ul", {}, items.map((t) => el("li", {}, t)))) : null;
+  const fs = r.first_screen || {};
+  return el("div", { class: "pg-read" },
+    r.summary ? el("p", { class: "dn-summary" }, r.summary) : null,
+    r.moves?.length ? el("div", { class: "chips" }, r.moves.map((m) => el("span", { class: "chip" }, m))) : null,
+    r.palette?.length ? paletteStrip(r.palette) : null,
+    fs.shows ? el("div", { class: "pg-first" }, el("p", { class: "dn-label" },
+      `First screen${Number.isFinite(fs.real_work_pct) ? ` · about ${fs.real_work_pct}% real work` : ""}`), el("p", {}, fs.shows),
+      fs.promise ? el("p", { class: "muted" }, fs.promise) : null) : null,
+    list("What works", r.strengths),
+    list("What holds it back", r.gaps),
+    r.borrow ? el("div", { class: "borrow" }, el("p", { class: "borrow-k" }, "How to borrow this"), el("p", {}, r.borrow)) : null,
+    el("details", { class: "dn-more" },
+      el("summary", {}, "Structure, width, images and type"),
+      el("dl", {},
+        row("Structure", r.structure),
+        row("Width", r.width_use),
+        row("Images", r.image_treatment ? `${r.image_treatment.consistent ? "One treatment throughout. " : "Treatment changes. "}${r.image_treatment.description || ""}` : null),
+        row("Type and colour", r.type_and_colour),
+        row("On a phone", r.phone),
+        row("Moves", r.move_notes),
+        row("Motion", r.motion))));
+}
+
+function capturedPages(n) {
+  const imgs = (n.images || []).filter((i) => i.url && i.page);
+  return (n.links || []).map((l) => {
+    const mine = imgs.filter((i) => i.page === l.url);
+    const shots = mine.filter((i) => SHOT_ROLES.includes(i.role));
+    if (!shots.length && !l.page_read) return null;
+    const byTop = (a, b) => (a.top ?? 0) - (b.top ?? 0);
+    const first = shots.find((i) => i.role === "first-screen-1440");
+    const phone = shots.find((i) => i.role === "first-screen-390");
+    const whole = shots.filter((i) => i.role === "full-page").sort(byTop);
+    const figures = mine.filter((i) => i.role === "figure").sort(byTop);
+    const thumb = (i, label, cls) => i ? el("a", { class: `pg-thumb ${cls}`, href: i.url, target: "_blank", rel: "noopener" },
+      el("img", { src: i.url, alt: label, loading: "lazy" }), el("span", {}, label)) : null;
+    return el("section", { class: "captured-page" },
+      el("div", { class: "pg-head" },
+        el("a", { class: "p-link", href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.page_title && !/^https?:/.test(l.page_title) ? l.page_title : pathOf(l.url), " ↗"),
+        el("span", { class: "p-host" }, [pathOf(l.url), l.page_height_px_at_1440 ? `${px(l.page_height_px_at_1440)} tall` : null,
+          l.videos_on_page ? `${l.videos_on_page} video${l.videos_on_page === 1 ? "" : "s"}` : null,
+          l.captured_on ? `captured ${fmtDate(l.captured_on)}` : null].filter(Boolean).join(" · "))),
+      (first || phone) ? el("div", { class: "pg-thumbs" }, thumb(first, "Desktop, first screen", "desk"), thumb(phone, "Phone, first screen", "phone")) : null,
+      whole.length ? el("div", { class: "pg-whole", tabindex: "0", "aria-label": "Whole page, scroll to read" },
+        whole.map((i) => el("img", { src: i.url, alt: "", loading: "lazy" }))) : null,
+      whole.length ? el("p", { class: "pg-note" }, "Whole page. Scroll inside the frame to move down it.") : null,
+      pageRead(l.page_read),
+      figures.length ? el("details", { class: "dn-more pg-figs" },
+        el("summary", {}, `Figures from this page (${figures.length})`),
+        figures.map((f, k) => el("div", { class: "pg-fig" },
+          el("a", { href: f.url, target: "_blank", rel: "noopener" }, el("img", { src: f.url, alt: f.caption || "", loading: "lazy" })),
+          el("div", {},
+            el("p", { class: "dn-label" }, [`Figure ${k + 1}`, f.top != null ? `${px(f.top)} down` : null,
+              f.width_at_1440 ? `${f.width_at_1440} px wide` : null].filter(Boolean).join(" · ")),
+            f.design?.summary ? el("p", {}, f.design.summary) : null,
+            f.caption_on_page ? el("p", { class: "muted" }, `Caption: ${f.caption_on_page}`) : null,
+            f.design?.moves?.length ? el("div", { class: "chips" }, f.design.moves.map((m) => el("span", { class: "chip" }, m))) : null)))) : null);
+  }).filter(Boolean);
 }
 
 function fromPage(n) {
@@ -555,8 +633,9 @@ async function openNote(id, push = true) {
     if (n.deleted_at) { title.readOnly = true; bodyBox.readOnly = true; }
     body.replaceChildren(...[
       binBar,
-      n.images?.length ? el("div", { class: "d-images" }, n.images.filter((i) => i.url).map((i) => el("img", { src: i.url, alt: i.caption || "" }))) : null,
+      standalone(n).some((i) => i.url) ? el("div", { class: "d-images" }, standalone(n).filter((i) => i.url).map((i) => el("img", { src: i.url, alt: i.caption || "" }))) : null,
       designNotes(n),
+      ...capturedPages(n),
       title,
       n.deleted_at ? null : Object.assign(chipsFor(n), { id: "d-chips" }),
       n.why_saved ? el("p", { class: "why-line" }, n.why_saved) : null,
@@ -591,7 +670,7 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
   };
   sheet.addEventListener("touchstart", (e) => {
     y0 = null;
-    if (e.touches.length !== 1 || body.scrollTop > 0 || e.target.closest(".pop")) return;
+    if (e.touches.length !== 1 || body.scrollTop > 0 || e.target.closest(".pop, .pg-whole")) return;
     y0 = e.touches[0].clientY; dy = 0; t0 = Date.now(); pulling = false;
   }, { passive: true });
   sheet.addEventListener("touchmove", (e) => {
