@@ -9,7 +9,9 @@
 //   (images as base64 JPEG). The whole page is stitched from screen-sized frames taken while scrolling, so fixed
 //   backgrounds and sticky layers render as a reader sees them (a single tall capture loses them). figures lists the
 //   six largest images on the page by rendered area at this width, in page order, with address, alt text, caption,
-//   rendered size and distance from the top; videos counts video players.
+//   rendered size and distance from the top; videos counts video players. motion holds up to two motion strips
+//   ({ where, top, image, changed_pct }: three frames a second apart, side by side), only for parts that move.
+//   Pass motion: false to skip them.
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import chromium from "@sparticuz/chromium";
@@ -147,11 +149,85 @@ async function stitch(browser, page, width, height, h, scale) {
   }
 }
 
+// Motion strips: the stills are taken with reduced motion on (so text isn't caught mid-fade); then motion is turned
+// back on and three frames are taken a second apart, of the first screen and, when the page has one further down, of its
+// first video (muted, asked to play). The frames go side by side at half size, left to right. A strip is kept only when
+// its frames differ (more than 0.4% of a small greyscale copy changes), so still pages get none.
+// Animations a page starts from script only when it loads without reduced motion won't show; CSS ones and videos do.
+const MOTION_GAP_MS = 1000;
+export async function motionStrips(browser, page, width, height) {
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
+  const spots = [{ where: "first screen", top: 0 }];
+  const video = await page.evaluate(() => {
+    const v = [...document.querySelectorAll("video, iframe")].find((el) => el.tagName === "VIDEO" || /youtube|vimeo|loom|wistia/i.test(el.src));
+    if (!v) return null;
+    const r = v.getBoundingClientRect();
+    return Math.max(0, Math.round(r.top + window.scrollY - Math.max(0, (window.innerHeight - r.height) / 2)));
+  }).catch(() => null);
+  if (video != null && video > height * 0.5) spots.push({ where: "first video", top: video });
+  // All frames first, then the compositing tab: a page in a background tab stops painting, and screenshots of it hang.
+  const shots = [];
+  try {
+    for (const spot of spots) {
+      await page.evaluate((t) => window.scrollTo(0, t), spot.top);
+      await page.evaluate(() => document.querySelectorAll("video").forEach((v) => { v.muted = true; v.play?.().catch(() => {}); })).catch(() => {});
+      await new Promise((r) => setTimeout(r, 500));
+      const top = await page.evaluate(() => Math.round(window.scrollY));
+      const frames = [];
+      for (let i = 0; i < 3; i++) {
+        if (i) await new Promise((r) => setTimeout(r, MOTION_GAP_MS));
+        frames.push((await page.screenshot({ type: "jpeg", quality: 72 })).toString("base64"));
+      }
+      shots.push({ spot, top, frames });
+    }
+  } finally {
+    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+  }
+  const strips = [];
+  const sheet = await browser.newPage();
+  try {
+    for (const { spot, top, frames } of shots) {
+      const out = await sheet.evaluate(async (frames, w, h) => {
+        const imgs = await Promise.all(frames.map(async (f) => { const im = new Image(); im.src = `data:image/jpeg;base64,${f}`; await im.decode(); return im; }));
+        // How much changes: compare each later frame with the first on a 96 px wide greyscale copy.
+        const tw = 96, th = Math.max(1, Math.round((96 * h) / w));
+        const grey = (im) => {
+          const c = document.createElement("canvas"); c.width = tw; c.height = th;
+          const g = c.getContext("2d"); g.drawImage(im, 0, 0, tw, th);
+          const d = g.getImageData(0, 0, tw, th).data, o = new Float32Array(tw * th);
+          for (let i = 0; i < o.length; i++) o[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+          return o;
+        };
+        const base = grey(imgs[0]);
+        let changed = 0;
+        for (const im of imgs.slice(1)) {
+          const g = grey(im);
+          let n = 0;
+          for (let i = 0; i < g.length; i++) if (Math.abs(g[i] - base[i]) > 24) n++;
+          changed = Math.max(changed, n / g.length);
+        }
+        const fw = Math.round(w / 2), fh = Math.round(h / 2), gap = 8;
+        const c = document.createElement("canvas");
+        c.width = fw * 3 + gap * 2; c.height = fh;
+        const g = c.getContext("2d");
+        g.fillStyle = "#8a8a8a"; g.fillRect(0, 0, c.width, c.height);
+        imgs.forEach((im, i) => g.drawImage(im, i * (fw + gap), 0, fw, fh));
+        return { changed, b64: c.toDataURL("image/jpeg", 0.75).split(",")[1] };
+      }, frames, width, height);
+      if (out.changed > 0.004) strips.push({ where: spot.where, top, image: out.b64, changed_pct: Math.round(out.changed * 1000) / 10 });
+    }
+  } finally {
+    await sheet.close().catch(() => {});
+  }
+  return strips;
+}
+
 // One attempt at a page. lite (the retry after a crash) skips the scroll-through and keeps the whole-page shot
 // to half size or less, which needs far less memory on image-heavy pages.
-export async function capture(url, width, height, wantFull, lite) {
+export async function capture(url, width, height, wantFull, lite, wantMotion = false) {
   let browser, stage = "launch";
-  const out = { first: null, full: null, fullHeight: null, clipped: false, scale: 1, title: null, finalUrl: url, status: null };
+  const t0 = Date.now();
+  const out = { first: null, full: null, fullHeight: null, clipped: false, scale: 1, title: null, finalUrl: url, status: null, motion: [] };
   try {
     browser = await launch(width, height);
     stage = "load";
@@ -192,6 +268,11 @@ export async function capture(url, width, height, wantFull, lite) {
       const h = Math.min(out.fullHeight, Math.floor(MAX_FULL_HEIGHT / out.scale));
       out.clipped = h < out.fullHeight;
       out.full = await stitch(browser, page, width, height, h, out.scale);
+    }
+    // Motion last, and only with time to spare: it takes up to eight seconds, and the phone screen comes after it.
+    if (wantMotion && !lite && Date.now() - t0 < 25000) {
+      stage = "motion";
+      out.motion = await motionStrips(browser, page, width, height).catch((e) => { console.error("motion failed", url, String(e)); return []; });
     }
     return out;
   } catch (e) {
@@ -243,13 +324,14 @@ export default async function handler(req, res) {
   const wantFull = body.full !== false;
   const wantDesktop = body.desktop !== false;
   const wantPhone = body.phone !== false;
+  const wantMotion = body.motion !== false;
   const started = Date.now();
 
   // Headless Chrome sometimes dies mid-shot on heavy pages ("Target closed"). Try once more in lite mode,
   // and keep whichever attempt got further: a first screen on its own is still worth keeping.
   let r = { first: null, full: null, fullHeight: null, clipped: false, scale: 1, title: null, finalUrl: url, status: null };
   if (wantDesktop) {
-    r = await capture(url, width, height, wantFull, false);
+    r = await capture(url, width, height, wantFull, false, wantMotion);
     if (r.error || (wantFull && !r.full)) {
       const again = await capture(url, width, height, wantFull, true);
       if ((again.first && !r.first) || (again.full && !r.full)) r = { ...again, first: again.first ?? r.first };
@@ -270,5 +352,6 @@ export default async function handler(req, res) {
     phone: phone ? Buffer.from(phone).toString("base64") : null,
     width, height, full_height: r.fullHeight, full_scale: Math.round(r.scale * 100) / 100, clipped: r.clipped,
     title: r.title, final_url: r.finalUrl, status: r.status, figures: r.figures ?? [], videos: r.videos ?? null,
+    motion: r.motion ?? [],
   });
 }

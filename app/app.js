@@ -463,7 +463,7 @@ function paletteStrip(palette) {
   return el("div", { class: "palette" }, strip, label);
 }
 // Images saved on their own (not screenshots or figures of a captured page). Captured pages get their own sections.
-const SHOT_ROLES = ["first-screen-1440", "first-screen-390", "full-page"];
+const SHOT_ROLES = ["first-screen-1440", "first-screen-390", "full-page", "motion-strip"];
 const standalone = (n) => (n.images || []).filter((i) => !i.page || !(n.links || []).some((l) => l.url === i.page));
 // A note with captured pages leads with the pages; images saved before the capture follow them, compact, as figures do.
 const hasPages = (n) => (n.links || []).some((l) => l.page_read) || (n.images || []).some((i) => SHOT_ROLES.includes(i.role));
@@ -560,6 +560,7 @@ function capturedPages(n) {
     const first = shots.find((i) => i.role === "first-screen-1440");
     const phone = shots.find((i) => i.role === "first-screen-390");
     const whole = shots.filter((i) => i.role === "full-page").sort(byTop);
+    const motion = shots.filter((i) => i.role === "motion-strip").sort(byTop);
     const figures = mine.filter((i) => i.role === "figure").sort(byTop);
     const thumb = (i, label, cls) => i ? el("a", { class: `pg-thumb ${cls}`, href: i.url, target: "_blank", rel: "noopener" },
       el("img", { src: i.url, alt: label, loading: "lazy" }), el("span", {}, label)) : null;
@@ -571,6 +572,9 @@ function capturedPages(n) {
           l.videos_on_page ? `${l.videos_on_page} video${l.videos_on_page === 1 ? "" : "s"}` : null,
           l.captured_on ? `captured ${fmtDate(l.captured_on)}` : null].filter(Boolean).join(" · "))),
       (first || phone) ? el("div", { class: "pg-thumbs" }, thumb(first, "Desktop, first screen", "desk"), thumb(phone, "Phone, first screen", "phone")) : null,
+      ...motion.map((m) => el("figure", { class: "pg-motion" },
+        el("a", { href: m.url, target: "_blank", rel: "noopener" }, el("img", { src: m.url, alt: "", loading: "lazy" })),
+        el("figcaption", {}, `Motion: ${m.caption || "three frames, a second apart, left to right"}`))),
       whole.length ? el("div", { class: "pg-whole", tabindex: "0", "aria-label": "Whole page, scroll to read" },
         whole.map((i) => el("img", { src: i.url, alt: "", loading: "lazy" }))) : null,
       whole.length ? el("p", { class: "pg-note" }, "Whole page. Scroll inside the frame to move down it.") : null,

@@ -69,7 +69,7 @@ create table hopper.attachments (
   caption text,
   text_in_image text,
   design_read jsonb,
-  image_role text,                        -- first-screen-1440, first-screen-390, full-page or figure
+  image_role text,                        -- first-screen-1440, first-screen-390, full-page, figure or motion-strip
   source_page_url text,                   -- the page the image was captured from
   caption_on_page text,
   rendered_width_at_1440 integer,
@@ -77,8 +77,9 @@ create table hopper.attachments (
   position_from_top_px_at_1440 integer,
   captured_on date,
   moves text[] not null default '{}'::text[],  -- visual moves from hopper.moves, set by hopper-design
+  content_sha256 text,                    -- sha256 of the stored bytes: the same picture is kept once per note
   constraint attachments_pkey primary key (id),
-  constraint attachments_image_role_check check (image_role in ('first-screen-1440','first-screen-390','full-page','figure')),
+  constraint attachments_image_role_check check (image_role in ('first-screen-1440','first-screen-390','full-page','figure','motion-strip')),
   constraint attachments_note_id_original_file_key unique (note_id, original_file)
 );
 
@@ -248,6 +249,7 @@ create table hopper.settings (
 -- Indexes
 create index attachments_note_idx on hopper.attachments (note_id);
 create index attachments_role_idx on hopper.attachments (note_id, image_role);
+create index attachments_content_sha256_idx on hopper.attachments (note_id, content_sha256) where content_sha256 is not null;
 create index attachments_moves_idx on hopper.attachments using gin (moves);
 create index benchmark_scores_visual_idx on hopper.benchmark_scores (visual_quality desc nulls last);
 create index benchmark_scores_presentation_idx on hopper.benchmark_scores (presentation desc nulls last);

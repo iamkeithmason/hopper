@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.4";
-import { encodeBase64 } from "jsr:@std/encoding@1/base64";
+import { decodeBase64, encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { measure, imageSize } from "./palette.ts";
 
 // Hopper design teardown (HOP-20), version 4: pages are read as pages. A page captured as screenshots (first screens at
@@ -174,7 +174,7 @@ const buildPageTool = (vocab: string[], moves: string[]) => ({
       items: obj({ hex: str("A hex value from the measured list, exactly as given."), role: { type: "string", enum: ROLES }, name: str("A short descriptive name.") }) },
     moves: { type: "array", items: { type: "string", enum: moves }, description: "Visual moves the page makes, from the list. At most 6." },
     move_notes: str("For each move, where on the page it appears, in a short clause."),
-    motion: str("Video or animation the page shows or the context reports; empty if none."),
+    motion: str("Video or animation the page shows: what moves in the motion strips and how (a loop, a transition, a playing video), or what the facts report. Empty if nothing moves."),
     aesthetics: { type: "array", items: { type: "string", enum: vocab }, description: "Two to four tags from the aesthetic vocabulary. At most 4." },
     strengths: strs("What makes the page work, each in one line.", 4),
     gaps: strs("What holds it back as a page, each in one line, judged by what is visible.", 3),
@@ -183,7 +183,7 @@ const buildPageTool = (vocab: string[], moves: string[]) => ({
   }),
 });
 
-const pagePrompt = (vocab: { name: string; grp: string; description: string }[], moves: { name: string; description: string }[]) => `You judge web pages as whole pages, usually designers' portfolio case studies, for a designer's private reference library. You get the page's first screen at 1440 x 900, its first screen on a phone, the whole page top to bottom (scaled down, perhaps in slices), and facts measured from the capture: page height, video count, and the largest figures with their rendered width, position and a short read of each.
+const pagePrompt = (vocab: { name: string; grp: string; description: string }[], moves: { name: string; description: string }[]) => `You judge web pages as whole pages, usually designers' portfolio case studies, for a designer's private reference library. You get the page's first screen at 1440 x 900, its first screen on a phone, the whole page top to bottom (scaled down, perhaps in slices), up to two motion strips when something on the page moves (three frames of the first screen or of a video, a second apart, left to right; a strip is only kept when its frames differ), and facts measured from the capture: page height, video count, and the largest figures with their rendered width, position and a short read of each.
 
 Read how the page works as a page: what a reader sees first, how the work is shown, the rhythm down the page, how width and images are used, and how it holds together. Don't strain to read small text in the whole-page image; use the first screens for detail.
 
@@ -264,6 +264,32 @@ async function fetchImage(path: string, mime0?: string) {
   return { bytes, mime };
 }
 
+// An image too large to decode here (or in a format the decoder can't read) is scaled down to 400 px by the Vercel
+// app's /api/shrink (sharp), and the small copy is measured instead: colour shares are fractions of the image, so they
+// survive the scaling. The function gets a signed address valid for five minutes, never the service key.
+// Null if shrinking isn't set up or fails; the read then goes ahead without a palette, as before.
+async function shrunkMeasure(path: string) {
+  try {
+    const [cfg] = await sql`select (select value from hopper.settings where key = 'shot_url') as shot_url,
+      (select decrypted_secret from vault.decrypted_secrets where name = 'hopper_shot_token') as tok`;
+    if (!cfg?.shot_url || !cfg?.tok) return null;
+    const url = Deno.env.get("SUPABASE_URL"), srk = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const sr = await fetch(`${url}/storage/v1/object/sign/${IMAGE_BUCKET}/${path}`, {
+      method: "POST", headers: { authorization: `Bearer ${srk}`, "content-type": "application/json" }, body: JSON.stringify({ expiresIn: 300 }) });
+    const signed = (await sr.json().catch(() => ({})))?.signedURL;
+    if (!sr.ok || !signed) return null;
+    const r = await fetch(String(cfg.shot_url).replace(/\/api\/shot$/, "/api/shrink"), {
+      method: "POST", signal: AbortSignal.timeout(30000),
+      headers: { "content-type": "application/json", "x-shot-token": cfg.tok },
+      body: JSON.stringify({ url: `${url}/storage/v1${signed}` }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.png) return null;
+    const m = await measure(decodeBase64(j.png));
+    if (!m.sampled) return null;
+    return { ...m, width: j.source_width ?? m.width, height: j.source_height ?? m.height, shrunk: true };
+  } catch (_) { return null; }
+}
+
 // A figure from a captured page: the light read, no palette measurement.
 async function readFigure(a: any, model: string, key: string, ctx: Ctx) {
   const img: any = await fetchImage(a.storage_path, a.mime);
@@ -294,6 +320,10 @@ async function readOne(a: any, model: string, key: string, ctx: Ctx) {
 
   let m;
   try { m = await measure(bytes); } catch (e) { return { error: `decode: ${String(e).slice(0, 120)}` }; }
+  if (!m.sampled) {
+    const small = await shrunkMeasure(a.storage_path);
+    if (small) m = { ...small, width: m.width || small.width, height: m.height || small.height };
+  }
 
   const res = await fetch(`${API}/messages`, { method: "POST", headers: headers(key, model), body: JSON.stringify(params(model, encodeBase64(bytes), mime, contextText(a, m), ctx)) });
   const j = await res.json();
@@ -354,22 +384,28 @@ async function relevance(read: any, why: string, key: string): Promise<string | 
 
 // One page, read as a whole from its screenshots and the facts measured at capture.
 async function readPage(pg: any, model: string, key: string, ctx: Ctx) {
-  const shots = await sql`select a.id, a.storage_path, a.mime, a.image_role, a.position_from_top_px_at_1440 from hopper.attachments a
+  const shots = await sql`select a.id, a.storage_path, a.mime, a.image_role, a.position_from_top_px_at_1440, a.caption from hopper.attachments a
       where a.note_id = ${pg.note_id} and a.source_page_url = ${pg.url} and a.storage_path is not null
-        and a.image_role in ('first-screen-1440', 'first-screen-390', 'full-page')
-      order by case a.image_role when 'first-screen-1440' then 0 when 'first-screen-390' then 1 else 2 end, a.position_from_top_px_at_1440 nulls first`;
+        and a.image_role in ('first-screen-1440', 'first-screen-390', 'full-page', 'motion-strip')
+      order by case a.image_role when 'first-screen-1440' then 0 when 'first-screen-390' then 1 when 'motion-strip' then 2 else 3 end,
+        a.position_from_top_px_at_1440 nulls first`;
   const figs = await sql`select a.rendered_width_at_1440 w, a.rendered_height_at_1440 h, a.position_from_top_px_at_1440 top, a.caption_on_page,
         a.design_read->>'summary' summary, a.moves from hopper.attachments a
       where a.note_id = ${pg.note_id} and a.source_page_url = ${pg.url} and a.image_role = 'figure'
       order by a.position_from_top_px_at_1440 nulls last`;
   const content: any[] = [];
-  let first: any = null;
+  let first: any = null, firstPath: string | null = null;
   const used: string[] = [];
-  for (const s of (shots as any[]).filter((x) => x.image_role !== "full-page").concat((shots as any[]).filter((x) => x.image_role === "full-page").slice(0, 3))) {
+  const all = shots as any[];
+  const pick = all.filter((x) => x.image_role.startsWith("first-screen"))
+    .concat(all.filter((x) => x.image_role === "motion-strip").slice(0, 2), all.filter((x) => x.image_role === "full-page").slice(0, 3));
+  for (const s of pick) {
     const img: any = await fetchImage(s.storage_path, s.mime);
     if (img.error) continue;
-    if (s.image_role === "first-screen-1440" && !first) first = img;
+    if (s.image_role === "first-screen-1440" && !first) { first = img; firstPath = s.storage_path; }
+    // Motion strips: three frames side by side, left to right, a second apart (the caption says where on the page).
     const label = s.image_role === "full-page" ? `Whole page${s.position_from_top_px_at_1440 ? `, from ${s.position_from_top_px_at_1440} px down` : ""}` :
+      s.image_role === "motion-strip" ? `Motion strip: ${s.caption ?? "three frames, a second apart, left to right"}` :
       s.image_role === "first-screen-390" ? "First screen on a phone (390 x 844 at 2x)" : "First screen at 1440 x 900";
     content.push({ type: "text", text: label }, { type: "image", source: { type: "base64", media_type: img.mime, data: encodeBase64(img.bytes) } });
     used.push(s.id);
@@ -377,6 +413,7 @@ async function readPage(pg: any, model: string, key: string, ctx: Ctx) {
   if (!content.length) return { error: "no screenshots to read" };
   let m: any = { palette: [], sampled: false };
   if (first) { try { m = await measure(first.bytes); } catch (_) { /* read without a palette */ } }
+  if (first && !m.sampled && firstPath) m = (await shrunkMeasure(firstPath)) ?? m;
   const facts: string[] = [`Page: ${pg.url}`];
   if (pg.page_height_px_at_1440) facts.push(`Page height at 1440: ${pg.page_height_px_at_1440} px.`);
   if (pg.videos_on_page != null) facts.push(`Video players on the page: ${pg.videos_on_page}.`);

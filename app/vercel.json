@@ -47,6 +47,10 @@
       "maxDuration": 60,
       "memory": 2048,
       "includeFiles": "fonts/**"
+    },
+    "api/shrink.js": {
+      "maxDuration": 30,
+      "memory": 1024
     }
   }
 }
