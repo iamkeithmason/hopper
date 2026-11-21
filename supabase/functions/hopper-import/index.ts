@@ -13,7 +13,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 //      each image as an attachment with its page context (role, page address, caption, rendered size and
 //      position at 1440), and each page as a link on the note (height, video count, capture date, layout read).
 //      An image whose original_file is already on the note keeps its stored copy and design read and only
-//      gains the context, so the same picture is never stored twice.
+//      gains the context, so the same picture is never stored twice. Nor is one whose bytes (sha256) are already on
+//      the note under another address.
 // Nothing else in the bucket can be written through this function, it never reads anything back, and a locked
 // or binned note gets nothing.
 
@@ -53,7 +54,7 @@ const web = (v: unknown) => (/^https?:\/\//i.test(String(v ?? "")) ? String(v).s
 async function record(noteId: string, b: any) {
   const images = Array.isArray(b.images) ? b.images.slice(0, 100) : [];
   const pages = Array.isArray(b.pages) ? b.pages.slice(0, 20) : [];
-  let added = 0, annotated = 0, links = 0;
+  let added = 0, annotated = 0, links = 0, duplicates = 0;
   for (const p of pages) {
     const url = web(p.url);
     if (!url) continue;
@@ -87,14 +88,22 @@ async function record(noteId: string, b: any) {
     const path = `import/${noteId}/${name}`;
     const { data } = await storage.list(`import/${noteId}`, { search: name, limit: 1 });
     if (!data?.some((f: any) => f.name === name)) continue;
+    // The same bytes already on the note under another address: not kept twice (its uploaded copy is removed).
+    const file = await storage.download(path);
+    if (file.error || !file.data) continue;
+    const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(await file.data.arrayBuffer()) as BufferSource);
+    const hash = [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, "0")).join("");
+    const [same] = await sql`select 1 from hopper.attachments where note_id = ${noteId} and content_sha256 = ${hash} limit 1`;
+    if (same) { await storage.remove([path]); duplicates++; continue; }
     await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption, image_role,
-                source_page_url, caption_on_page, rendered_width_at_1440, rendered_height_at_1440, position_from_top_px_at_1440, captured_on)
+                source_page_url, caption_on_page, rendered_width_at_1440, rendered_height_at_1440, position_from_top_px_at_1440, captured_on,
+                content_sha256)
               values (${noteId}, ${original}, ${path}, ${TYPES.includes(im.mime) ? im.mime : null}, ${int(im.width)}, ${int(im.height)},
-                ${ctx.caption}, ${ctx.role}, ${ctx.page}, ${ctx.onPage}, ${ctx.w}, ${ctx.h}, ${ctx.top}, ${ctx.on})
+                ${ctx.caption}, ${ctx.role}, ${ctx.page}, ${ctx.onPage}, ${ctx.w}, ${ctx.h}, ${ctx.top}, ${ctx.on}, ${hash})
               on conflict (note_id, original_file) do nothing`;
     added++;
   }
-  return { added, annotated, pages: links };
+  return { added, annotated, duplicates, pages: links };
 }
 
 Deno.serve(async (req: Request) => {

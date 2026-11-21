@@ -11,6 +11,7 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // from the screenshot function on the Vercel app) and, from the invoke token only, source: "assistant".
 // "screenshot" { id, url?, views? } adds page screenshots to an existing note (its link, or another page as a new link), or retakes them.
 // "prune_shots" (invoke token only) removes screenshot files no attachment points at.
+// "hash_images" (invoke token only) fills content_sha256 for images stored before byte dedupe, 25 a call.
 // "note" also returns the note's aesthetic tags and, for images judged design references, their design read.
 // Bin: "delete" moves a note to the Bin (deleted_at); the nightly hopper-bin job erases it after BIN_DAYS.
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
@@ -33,6 +34,17 @@ const json = (d: unknown, status = 200) =>
   new Response(JSON.stringify(d), { status, headers: { ...CORS, "content-type": "application/json" } });
 const IN_BIN = () => json({ error: "This note is in the Bin. Restore it first.", in_bin: true }, 409);
 const erasesAt = (d: any) => (d ? new Date(new Date(d).getTime() + BIN_DAYS * 864e5).toISOString() : null);
+
+// The sha256 of an image's bytes (attachments.content_sha256): the same picture is kept once per note, whatever address
+// it came from. Screenshots are hashed too but never skipped: each is its own capture.
+async function bytesHash(b: Uint8Array) {
+  const d = await crypto.subtle.digest("SHA-256", b as BufferSource);
+  return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+async function sameOnNote(noteId: string, hash: string) {
+  const [row] = await sql`select id, image_role from hopper.attachments where note_id = ${noteId} and content_sha256 = ${hash} limit 1`;
+  return row ?? null;
+}
 
 async function sha256(s: string) {
   const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
@@ -155,8 +167,8 @@ async function keepPicture(noteId: string, p: Picture) {
   const { error } = await storage.upload(path, p.bytes, { contentType: p.mime, upsert: true });
   if (error) return false;
   const size = pictureSize(p.bytes);
-  const rows = await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height)
-            values (${noteId}, ${p.source}, ${path}, ${p.mime}, ${size?.width ?? null}, ${size?.height ?? null})
+  const rows = await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, content_sha256)
+            values (${noteId}, ${p.source}, ${path}, ${p.mime}, ${size?.width ?? null}, ${size?.height ?? null}, ${await bytesHash(p.bytes)})
             on conflict (note_id, original_file) do nothing returning id`;
   return rows.length > 0;
 }
@@ -263,7 +275,7 @@ async function linkify(id: string, anySite = false) {
 // views limits what is taken: desktop (first screen and whole page) and phone. The token is in Vault ('hopper_shot_token').
 type Figure = { src: string; alt?: string; caption?: string; width: number; height: number; top: number };
 type Shot = { first: string | null; full: string | null; phone: string | null; width: number; height: number; full_height: number | null; full_scale?: number; clipped: boolean; title: string | null;
-  figures?: Figure[]; videos?: number | null };
+  figures?: Figure[]; videos?: number | null; motion?: { where: string; top: number; image: string; changed_pct: number }[] };
 const ROLES = ["first-screen-1440", "full-page", "first-screen-390"];
 async function takeShot(url: string, roles = ROLES): Promise<Shot | { error: string }> {
   try {
@@ -315,12 +327,40 @@ async function keepShots(noteId: string, shot: Shot, pageUrl: string) {
     if (error) continue;
     const size = pictureSize(bytes);
     await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption,
-                image_role, source_page_url, captured_on)
+                image_role, source_page_url, captured_on, content_sha256)
               values (${noteId}, ${`capture:${pageUrl}#${role}`}, ${path}, 'image/jpeg', ${size?.width ?? w}, ${size?.height ?? h}, ${caption},
-                ${role}, ${pageUrl}, current_date)
+                ${role}, ${pageUrl}, current_date, ${await bytesHash(bytes)})
               on conflict (note_id, original_file) do update set storage_path = excluded.storage_path, width = excluded.width,
-                height = excluded.height, caption = excluded.caption, captured_on = excluded.captured_on, design_read = null`;
+                height = excluded.height, caption = excluded.caption, captured_on = excluded.captured_on, design_read = null,
+                content_sha256 = excluded.content_sha256`;
     kept++;
+  }
+  // Motion strips (three frames a second apart, side by side), only for parts of the page that move. A desktop retake
+  // replaces the page's strips: one that no longer moves is dropped with its file.
+  if (shot.first) {
+    const keep: string[] = [];
+    for (const [i, m] of (shot.motion ?? []).slice(0, 2).entries()) {
+      const bytes = decodeBase64(m.image);
+      const path = `shot/${noteId}/${stem}--motion-${i + 1}.jpg`;
+      const { error } = await storage.upload(path, bytes, { contentType: "image/jpeg", upsert: true });
+      if (error) continue;
+      const size = pictureSize(bytes);
+      const original = `capture:${pageUrl}#motion-strip-${i + 1}`;
+      const caption = `three frames of the ${m.where}, a second apart, left to right (${m.changed_pct}% of the view changes)`;
+      await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption,
+                  image_role, source_page_url, position_from_top_px_at_1440, captured_on, content_sha256)
+                values (${noteId}, ${original}, ${path}, 'image/jpeg', ${size?.width ?? null}, ${size?.height ?? null}, ${caption},
+                  'motion-strip', ${pageUrl}, ${m.top}, current_date, ${await bytesHash(bytes)})
+                on conflict (note_id, original_file) do update set storage_path = excluded.storage_path, width = excluded.width,
+                  height = excluded.height, caption = excluded.caption, position_from_top_px_at_1440 = excluded.position_from_top_px_at_1440,
+                  captured_on = excluded.captured_on, content_sha256 = excluded.content_sha256`;
+      keep.push(original);
+      kept++;
+    }
+    const gone = await sql`delete from hopper.attachments where note_id = ${noteId} and source_page_url = ${pageUrl}
+                             and image_role = 'motion-strip' and not (original_file = any(${keep}::text[])) returning storage_path`;
+    const paths = gone.map((g: any) => g.storage_path).filter(Boolean);
+    if (paths.length) await storage.remove(paths);
   }
   const figures = await keepFigures(noteId, shot, pageUrl, stem);
   if (kept) {
@@ -341,27 +381,38 @@ async function keepShots(noteId: string, shot: Shot, pageUrl: string) {
 // A figure already on the note (same address) keeps its stored copy and design read and only gains the context.
 async function keepFigures(noteId: string, shot: Shot, pageUrl: string, stem: string) {
   const figs = (shot.figures ?? []).filter((f) => /^https?:\/\//i.test(f.src)).slice(0, 6);
-  const results = await Promise.all(figs.map(async (f, i) => {
+  // Fetched side by side, stored one at a time, so two addresses for the same picture can't both slip in.
+  const fetched = await Promise.all(figs.map(async (f) => {
+    const [known] = await sql`select 1 from hopper.attachments where note_id = ${noteId} and original_file = ${f.src}`;
+    return known ? null : await fetchPicture(f.src, pageUrl);
+  }));
+  const results: number[] = [];
+  for (const [i, f] of figs.entries()) results.push(await (async () => {
     const ctx = { caption: `Figure ${i + 1} of the page${f.alt ? `: ${f.alt}` : ""}`.slice(0, 400), onPage: f.caption?.trim() || null };
-    const upd = await sql`update hopper.attachments set image_role = 'figure', source_page_url = ${pageUrl},
+    // The image already on the note (same address, or the same bytes saved earlier with no role) gains the figure's
+    // context; a figure whose bytes match another figure is not kept again.
+    const annotate = async (where: any) => (await sql`update hopper.attachments set image_role = 'figure', source_page_url = ${pageUrl},
         caption = coalesce(caption, ${ctx.caption}), caption_on_page = ${ctx.onPage}, rendered_width_at_1440 = ${f.width},
         rendered_height_at_1440 = ${f.height}, position_from_top_px_at_1440 = ${f.top}, captured_on = current_date
-      where note_id = ${noteId} and original_file = ${f.src} returning id`;
-    if (upd.length) return 1;
-    const p = await fetchPicture(f.src, pageUrl);
+      where note_id = ${noteId} and ${where} returning id`).length;
+    if (await annotate(sql`original_file = ${f.src}`)) return 1;
+    const p = fetched[i];
     if (!p) return 0;
+    const hash = await bytesHash(p.bytes);
+    const same = await sameOnNote(noteId, hash);
+    if (same) return same.image_role == null ? await annotate(sql`id = ${same.id}`) : 0;
     const path = `shot/${noteId}/${stem}--figure-${String(i + 1).padStart(2, "0")}.${IMAGE_TYPES[p.mime]}`;
     const { error } = await storage.upload(path, p.bytes, { contentType: p.mime, upsert: true });
     if (error) return 0;
     const size = pictureSize(p.bytes);
     const rows = await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption,
                 image_role, source_page_url, caption_on_page, rendered_width_at_1440, rendered_height_at_1440,
-                position_from_top_px_at_1440, captured_on)
+                position_from_top_px_at_1440, captured_on, content_sha256)
               values (${noteId}, ${f.src}, ${path}, ${p.mime}, ${size?.width ?? null}, ${size?.height ?? null}, ${ctx.caption},
-                'figure', ${pageUrl}, ${ctx.onPage}, ${f.width}, ${f.height}, ${f.top}, current_date)
+                'figure', ${pageUrl}, ${ctx.onPage}, ${f.width}, ${f.height}, ${f.top}, current_date, ${hash})
               on conflict (note_id, original_file) do nothing returning id`;
     return rows.length;
-  }));
+  })());
   return results.reduce((a, b) => a + b, 0);
 }
 
@@ -715,21 +766,25 @@ Deno.serve(async (req: Request) => {
         for (const [i, im] of images.entries()) {
           const path = `app/${n.id}/${i}.jpg`;
           const bytes = Uint8Array.from(atob(im.data), (c) => c.charCodeAt(0));
+          const hash = await bytesHash(bytes);
+          if (await sameOnNote(n.id, hash)) continue;
           const { error } = await storage.upload(path, bytes, { contentType: "image/jpeg", upsert: true });
           if (error) continue;
-          await sql`insert into hopper.attachments (note_id, storage_path, mime, width, height)
-                    values (${n.id}, ${path}, 'image/jpeg', ${Number(im.width) || null}, ${Number(im.height) || null})`;
+          await sql`insert into hopper.attachments (note_id, storage_path, mime, width, height, content_sha256)
+                    values (${n.id}, ${path}, 'image/jpeg', ${Number(im.width) || null}, ${Number(im.height) || null}, ${hash})`;
         }
         let fetched = 0;
         for (const [i, src] of imageUrls.entries()) {
           const p = await fetchPicture(src, url ?? undefined);
           if (!p) continue;
           const path = `link/${n.id}/${images.length + i}.${IMAGE_TYPES[p.mime]}`;
+          const hash = await bytesHash(p.bytes);
+          if (await sameOnNote(n.id, hash)) continue;
           const { error } = await storage.upload(path, p.bytes, { contentType: p.mime, upsert: true });
           if (error) continue;
           const size = pictureSize(p.bytes);
-          const rows = await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height)
-                    values (${n.id}, ${p.source}, ${path}, ${p.mime}, ${size?.width ?? null}, ${size?.height ?? null})
+          const rows = await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, content_sha256)
+                    values (${n.id}, ${p.source}, ${path}, ${p.mime}, ${size?.width ?? null}, ${size?.height ?? null}, ${hash})
                     on conflict (note_id, original_file) do nothing returning id`;
           fetched += rows.length;
         }
@@ -768,6 +823,23 @@ Deno.serve(async (req: Request) => {
         const names = rows.map((r: any) => r.name);
         if (names.length) { const { error } = await storage.remove(names); if (error) return json({ error: error.message }, 500); }
         return json({ ok: true, removed: names });
+      }
+      case "hash_images": {
+        // Server-side only: fill content_sha256 for images stored before hashing, up to 25 a call, and report what is
+        // left. Reads files; changes nothing but the hash column.
+        if (user.email !== "service") return json({ error: "not available" }, 403);
+        const rows = await sql`select id, storage_path from hopper.attachments where storage_path is not null and content_sha256 is null
+                               order by id limit 25`;
+        let hashed = 0;
+        const failed: string[] = [];
+        for (const r of rows as any[]) {
+          const { data, error } = await storage.download(r.storage_path);
+          if (error || !data) { failed.push(r.id); continue; }
+          await sql`update hopper.attachments set content_sha256 = ${await bytesHash(new Uint8Array(await data.arrayBuffer()))} where id = ${r.id}`;
+          hashed++;
+        }
+        const [{ left }] = await sql`select count(*)::int as left from hopper.attachments where storage_path is not null and content_sha256 is null`;
+        return json({ ok: true, hashed, failed, left });
       }
       case "relink": {
         // Repair a note saved before links were recognised: linkify, re-embed and file if it has no projects.

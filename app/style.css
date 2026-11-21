@@ -194,6 +194,9 @@ main { padding: 6px 8px 40px; }
 .pg-thumbs { display: grid; grid-template-columns: 3fr 1fr; gap: 8px; align-items: start; margin-bottom: 8px; }
 .pg-thumb { display: grid; gap: 4px; color: var(--soft); font-size: 12px; text-decoration: none; }
 .pg-thumb img { width: 100%; border-radius: 8px; box-shadow: 0 0 0 1px var(--line); display: block; }
+.pg-motion { margin: 0 0 8px; display: grid; gap: 4px; }
+.pg-motion img { width: 100%; border-radius: 8px; box-shadow: 0 0 0 1px var(--line); display: block; }
+.pg-motion figcaption { color: var(--soft); font-size: 12px; }
 .pg-whole { max-height: 70vh; overflow-y: auto; border-radius: 10px; box-shadow: 0 0 0 1px var(--line); overscroll-behavior: contain; }
 .pg-whole img { width: 100%; display: block; margin: 0; }
 .pg-whole:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
