@@ -422,8 +422,8 @@ async function projectNamed(name: string) {
 
 // Search weights (HOP-34): a keyword hit adds this to the note's semantic score, by the best field it lands in.
 const KW = { title: 0.2, tag: 0.15, summary: 0.1, body: 0.05 };
-// Semantic-only hits scoring below this are left out. gte-small scores unrelated notes around 0.75 to 0.8.
-const SEM_FLOOR = 0;
+// Semantic-only hits scoring below this are left out. gte-small scores noise at 0.80 to 0.82; Keith chose 0.82 (25 Nov).
+const SEM_FLOOR = 0.82;
 // A case-insensitive whole-word pattern for the query (Postgres \m and \M mark word starts and ends).
 function wordPattern(q: string) {
   const body = q.replace(/[\\^$.|?*+()[\]{}]/g, "\\$&").replace(/\s+/g, "\\s+");
