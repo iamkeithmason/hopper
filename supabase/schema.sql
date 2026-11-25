@@ -15,7 +15,7 @@
 -- 20261120225027_hopper_moves: hopper.moves (visual move vocabulary) and attachments.moves.
 -- 20261121091324_hopper_page_reads: design_sweep also runs for captured pages waiting for a page read (note_links.layout_read).
 -- 20261125173617_hopper_assistant_filing: note_projects.added_by also allows 'assistant' (projects Claude sets through the MCP).
--- 20261125190000_hopper_pin_projects: projects.pinned_at (pinned project pills, HOP-13).
+-- 20261125174922_hopper_pin_projects: projects.pinned_at (pinned project pills, HOP-13).
 --
 -- Extensions used (in schema extensions): vector, pg_net, pg_cron.
 -- Grants: every table and view here has access revoked from public, anon and authenticated.
