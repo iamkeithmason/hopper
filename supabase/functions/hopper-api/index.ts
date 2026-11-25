@@ -6,6 +6,7 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // Hopper's private API for the web app.
 // Every request must carry a Supabase Auth access token for the owner's email (hopper.settings 'owner_email').
 // Locked notes never return their body, summary or tags: only id, title, date and the lock.
+// "pin_project" { project_id, pinned } pins a project pill to the front of the row (HOP-13).
 // POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin" | "event", ... }
 // "capture" also takes, from the invoke token only, projects: exact project names to file the note in (hopper-mcp).
 // "capture" also takes image_urls (fetched and kept by Hopper), screenshot (first screen and whole page of the url,
@@ -527,12 +528,20 @@ Deno.serve(async (req: Request) => {
 
     switch (b.action) {
       case "projects": {
+        // Pinned projects first, in the order they were pinned (HOP-13); then by most recent note.
         const rows = await sql`
-          select p.id, p.name, count(n.id)::int as notes, max(n.created_at) as last_activity
+          select p.id, p.name, count(n.id)::int as notes, max(n.created_at) as last_activity, p.pinned_at is not null as pinned
           from hopper.projects p join hopper.note_projects np on np.project_id = p.id
           join hopper.notes n on n.id = np.note_id and not n.archived and n.deleted_at is null
-          group by p.id, p.name order by max(n.created_at) desc`;
+          group by p.id, p.name, p.pinned_at order by p.pinned_at nulls last, max(n.created_at) desc`;
         return json({ projects: rows });
+      }
+      case "pin_project": {
+        // Pin or unpin a project pill. Pinning again keeps the original place in the pinned order.
+        const [p] = await sql`update hopper.projects set pinned_at = case when ${Boolean(b.pinned)}::boolean then coalesce(pinned_at, now()) else null end
+                              where id = ${b.project_id}::uuid returning id, pinned_at is not null as pinned`;
+        if (!p) return json({ error: "not found" }, 404);
+        return json({ ok: true, pinned: p.pinned });
       }
       case "topics": {
         const rows = await sql`

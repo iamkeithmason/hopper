@@ -108,10 +108,53 @@ async function loadProjects() {
   renderPills();
 }
 
+// HOP-13: long-press a project pill (right-click on a computer) to pin it. Pinned pills come first, in the order they
+// were pinned, with a pin mark; the rest stay in order of recent activity (the order comes from the projects action).
 function renderPills() {
   const nav = $("pills"); nav.replaceChildren();
-  const pill = (label, id) => el("button", { class: state.project === id ? "on" : "", onclick: () => { track("pill", { project_id: id }); pickProject(id); } }, label);
-  nav.append(pill("All", null), ...state.projects.map((p) => pill(p.name, p.id)), el("button", { onclick: openProjects }, "All projects →"));
+  const pill = (label, id) => el("button", { class: state.project === id ? "on" : "", onclick: () => { if (justPinned()) return; track("pill", { project_id: id }); pickProject(id); } }, label);
+  const projectPill = (p) => {
+    const b = el("button", { class: [state.project === p.id ? "on" : "", p.pinned ? "pinned" : ""].filter(Boolean).join(" "),
+      title: p.pinned ? "Long-press or right-click to unpin" : "Long-press or right-click to pin",
+      // A long-press that pinned the project doesn't also open it.
+      onclick: () => { if (b.held || justPinned()) { b.held = false; return; } track("pill", { project_id: p.id }); pickProject(p.id); } },
+      p.pinned ? icon("pinned") : null, p.name);
+    holdToPin(b, p);
+    return b;
+  };
+  nav.append(pill("All", null), ...state.projects.map(projectPill), el("button", { onclick: openProjects }, "All projects →"));
+}
+
+// The pills re-render (in a new order) once a pin is saved, so the tap that ends a long-press can land on a different
+// pill: no pill opens for a moment after a long-press.
+let pinPressAt = 0;
+const justPinned = () => Date.now() - pinPressAt < 1200;
+function holdToPin(b, p) {
+  let timer = null, start = null;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  b.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse") return; // a mouse pins with right-click
+    b.held = false; start = [e.clientX, e.clientY];
+    timer = setTimeout(() => { b.held = true; timer = null; pinPressAt = Date.now(); togglePin(p); }, 550);
+  });
+  b.addEventListener("pointermove", (e) => { if (timer && Math.hypot(e.clientX - start[0], e.clientY - start[1]) > 8) cancel(); });
+  for (const ev of ["pointerup", "pointercancel", "pointerleave"]) b.addEventListener(ev, cancel);
+  // Right-click pins instead of opening the browser menu. A touch long-press can also fire contextmenu: pin once.
+  b.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (b.held) return;
+    if (timer) { cancel(); b.held = true; pinPressAt = Date.now(); } // touch: the browser's own long-press got there first
+    togglePin(p);
+  });
+}
+
+async function togglePin(p) {
+  const pinned = !p.pinned;
+  try {
+    await api({ action: "pin_project", project_id: p.id, pinned });
+    toast(pinned ? `Pinned ${p.name}` : `Unpinned ${p.name}`);
+    await loadProjects();
+  } catch (e) { toast(e.message); }
 }
 
 async function pickProject(id) {

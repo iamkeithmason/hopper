@@ -42,6 +42,9 @@ header#top.hide { transform: translateY(-100%); }
 .pills::-webkit-scrollbar { display: none; }
 .pills button { padding: 4px 0; color: var(--mid); font-weight: 500; border-bottom: 2px solid transparent; }
 .pills button.on { color: var(--ink); border-color: var(--ink); }
+.pills:not(.sub) button { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.pills button.pinned { display: inline-flex; align-items: center; gap: 3px; }
+.pills button.pinned svg { width: 13px; height: 13px; fill: currentColor; flex: none; }
 .pills.sub { gap: 8px; padding-top: 4px; }
 .pills.sub button { border: 0; background: var(--chip); border-radius: 14px; padding: 4px 12px; font-size: 13px; }
 .pills.sub button.on { background: var(--ink); color: var(--bg); }
