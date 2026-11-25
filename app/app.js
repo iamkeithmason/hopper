@@ -665,6 +665,17 @@ function capturedPages(n) {
   }).filter(Boolean);
 }
 
+// HOP-61: what a saved video says, from its transcript (hopper-transcript's summary: a paragraph, then "- " points).
+function videoSummary(l) {
+  if (!l?.transcript_summary) return null;
+  const [lead, ...rest] = String(l.transcript_summary).split(/\n\s*\n/);
+  const points = rest.join("\n").split("\n").map((x) => x.replace(/^\s*-\s*/, "").trim()).filter(Boolean);
+  return el("div", { class: "v-summary" },
+    el("p", { class: "dn-label" }, "What the video says"),
+    el("p", {}, lead.trim()),
+    points.length ? el("ul", {}, points.map((x) => el("li", {}, x))) : null);
+}
+
 function fromPage(n) {
   const l = n.links?.[0];
   if (!l) return null;
@@ -690,7 +701,9 @@ function fromPage(n) {
     el("a", { class: "p-link", href: l.url, title: l.url, target: "_blank", rel: "noopener noreferrer" }, l.page_title || shortUrl(l.url), " ↗"),
     el("span", { class: "p-host" }, host),
     desc ? el("p", { class: "p-desc" }, String(desc).slice(0, 600)) : null,
-    ...n.links.slice(1).map((x) => el("a", { class: "p-link", href: x.url, title: x.url, target: "_blank", rel: "noopener noreferrer" }, x.page_title || shortUrl(x.url), " ↗")));
+    videoSummary(l),
+    ...n.links.slice(1).flatMap((x) => [el("a", { class: "p-link", href: x.url, title: x.url, target: "_blank", rel: "noopener noreferrer" }, x.page_title || shortUrl(x.url), " ↗"),
+      videoSummary(x)]));
 }
 
 async function openNote(id, push = true) {

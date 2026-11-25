@@ -27,6 +27,7 @@ function embedText(n: any) {
     n.people?.length ? `People: ${n.people.join(", ")}` : null,
     n.works?.length ? `Works: ${n.works.join(", ")}` : null,
     n.link_title ? `Link: ${n.link_title}` : null,
+    n.video ? `Video: ${String(n.video).slice(0, 600)}` : null,
     n.body ? String(n.body).slice(0, 1200) : null,
     n.list_text ? String(n.list_text).slice(0, 600) : null,
   ];
@@ -57,7 +58,9 @@ Deno.serve(async (req: Request) => {
         (select array_agg(t.name) from hopper.note_topics nt join hopper.topics t on t.id = nt.topic_id where nt.note_id = n.id) as topics,
         (select array_agg(p.name) from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = n.id) as people,
         (select array_agg(w.title) from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = n.id) as works,
-        (select l.page_title from hopper.note_links l where l.note_id = n.id and l.page_title is not null limit 1) as link_title
+        (select l.page_title from hopper.note_links l where l.note_id = n.id and l.page_title is not null limit 1) as link_title,
+        -- HOP-61: what a saved video says (hopper-transcript's summary).
+        (select string_agg(l.transcript_summary, ' | ') from hopper.note_links l where l.note_id = n.id and l.transcript_summary is not null) as video
       from hopper.notes n
       where n.is_locked = false and n.deleted_at is null and n.tagged_at is not null
         and (${refresh}::boolean or not exists (select 1 from hopper.note_embeddings e where e.note_id = n.id))

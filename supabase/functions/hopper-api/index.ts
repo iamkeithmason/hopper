@@ -16,6 +16,8 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // "screenshot" { id, url?, views? } adds page screenshots to an existing note (its link, or another page as a new link), or retakes them.
 // "prune_shots" (invoke token only) removes screenshot files no attachment points at.
 // "hash_images" (invoke token only) fills content_sha256 for images stored before byte dedupe, 25 a call.
+// "capture" also takes transcript (and transcript_language) for a video url, read off the page by the extension (HOP-61);
+// hopper-transcript summarises it in the background. "note" returns each link's transcript_summary.
 // "note" also returns the note's aesthetic tags and, for images judged design references, their design read.
 // Bin: "delete" moves a note to the Bin (deleted_at); the nightly hopper-bin job erases it after BIN_DAYS.
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
@@ -28,6 +30,7 @@ const storage = createClient(URL_, SERVICE).storage.from("hopper-images");
 // @ts-ignore Supabase global is provided by the edge runtime
 const session = new Supabase.ai.Session("gte-small");
 const BIN_DAYS = 7;
+const TRANSCRIPT_MAX = 400_000; // characters of a video transcript kept (HOP-61); about five hours of speech
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -426,11 +429,12 @@ async function embedAndFile(id: string, refile: boolean) {
   const [n] = await sql`
     select n.id, n.title, n.body, n.why_saved, n.is_locked, n.deleted_at,
       (select coalesce(l.page_title, l.url) from hopper.note_links l where l.note_id = n.id limit 1) as link,
-      (select l.page_text from hopper.note_links l where l.note_id = n.id and l.page_text is not null limit 1) as link_text
+      (select l.page_text from hopper.note_links l where l.note_id = n.id and l.page_text is not null limit 1) as link_text,
+      (select string_agg(l.transcript_summary, ' | ') from hopper.note_links l where l.note_id = n.id and l.transcript_summary is not null) as video
     from hopper.notes n where n.id = ${id}`;
   if (!n || n.is_locked || n.deleted_at) return [];
   const text = [n.title, n.why_saved, n.link ? `Link: ${n.link}` : null, n.link_text ? String(n.link_text).slice(0, 800) : null,
-    n.body ? String(n.body).slice(0, 1200) : null]
+    n.video ? `Video: ${String(n.video).slice(0, 600)}` : null, n.body ? String(n.body).slice(0, 1200) : null]
     .filter(Boolean).join("\n").slice(0, 1800);
   if (!text.trim()) return [];
   const vec = await embed(text);
@@ -627,7 +631,8 @@ Deno.serve(async (req: Request) => {
           union all select 'topic', t.name, nt.confidence, null, null, null from hopper.note_topics nt join hopper.topics t on t.id = nt.topic_id where nt.note_id = ${n.id}
           union all select 'person', p.name, np.confidence, np.confirmed, null, null from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = ${n.id}
           union all select 'work', w.title, nw.confidence, null, null, null from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = ${n.id}`;
-        const links = await sql`select url, page_title, page_text, thumbnail_url, captured_on, page_height_px_at_1440, videos_on_page, layout_read
+        const links = await sql`select url, page_title, page_text, thumbnail_url, captured_on, page_height_px_at_1440, videos_on_page, layout_read,
+                                  kind, transcript_summary, (transcript is not null) as has_transcript
                                 from hopper.note_links where note_id = ${n.id} order by (layout_read is null), url`;
         const atts = await sql`select storage_path, caption, design_read, image_role, source_page_url, position_from_top_px_at_1440,
                                  rendered_width_at_1440, caption_on_page
@@ -851,6 +856,20 @@ Deno.serve(async (req: Request) => {
           fetched += rows.length;
         }
         try { await linkify(n.id, source === "assistant"); } catch (_) { /* the note is saved either way */ }
+        // HOP-61: the extension reads a video's transcript off the page; keep it on the link and summarise it in the background.
+        const transcript = url && typeof b.transcript === "string" ? b.transcript.trim().slice(0, TRANSCRIPT_MAX) : "";
+        let transcriptKept = false;
+        if (transcript.length >= 200) {
+          const rows = await sql`update hopper.note_links set transcript = ${transcript},
+                                   transcript_language = ${String(b.transcript_language ?? "").slice(0, 20) || null},
+                                   transcript_source = ${service && route === "extension" ? "extension" : "assistant"},
+                                   transcript_at = now(), transcript_summary = null
+                                 where note_id = ${n.id} and url = ${url} returning id`;
+          transcriptKept = rows.length > 0;
+          if (transcriptKept && !lock) {
+            try { await sql`select hopper.call_fn('hopper-transcript', ${sql.json({ link_ids: [rows[0].id] })})`; } catch (_) { /* a sweep picks it up */ }
+          }
+        }
         let filed: any[] = [];
         if (chosen.length && !lock) {
           for (const p of chosen) {
@@ -866,7 +885,8 @@ Deno.serve(async (req: Request) => {
         try { await sql`select hopper.tag_new(${n.id}::uuid)`; } catch (_) { /* the sweep picks it up */ }
         const [{ c: stored }] = await sql`select count(*)::int as c from hopper.attachments where note_id = ${n.id}`;
         const [{ t }] = await sql`select title as t from hopper.notes where id = ${n.id}`;
-        return json({ saved: { ...n, title: t }, filed, images: stored, image_urls_kept: fetched, screenshot: shotResult });
+        return json({ saved: { ...n, title: t }, filed, images: stored, image_urls_kept: fetched, screenshot: shotResult,
+                      transcript: transcriptKept || undefined });
       }
       case "screenshot": {
         // Add (or retake) page screenshots on an existing note: its own link, or { url } for another page of the same
