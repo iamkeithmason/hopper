@@ -234,16 +234,24 @@ create table hopper.corrections (
   at timestamp with time zone not null default now()
 );
 
--- Navigation taps in the app (open, pill, sheet, sheet_pick, topic), counted silently.
+-- Navigation taps in the app (open, pill, sheet, sheet_pick, topic), counted silently, and (HOP-63) note opens,
+-- searches and MCP calls by who made them: Keith in the app or Claude through the MCP. Searches keep their length
+-- and the notes they returned, never their words.
 create table hopper.ui_events (
   id bigint generated always as identity primary key,
-  event text not null check (event in ('open', 'pill', 'sheet', 'sheet_pick', 'topic')),
+  event text not null check (event in ('open', 'pill', 'sheet', 'sheet_pick', 'topic', 'note_open', 'search', 'mcp_call')),
   project_id uuid references hopper.projects(id) on delete set null,
   topic text,
   device text check (device in ('phone', 'desktop')),
-  at timestamp with time zone not null default now()
+  at timestamp with time zone not null default now(),
+  actor text not null default 'keith' check (actor in ('keith', 'claude')),
+  note_id uuid references hopper.notes(id) on delete set null,
+  tool text,                              -- the MCP tool, for actor claude
+  query_len integer,
+  result_ids uuid[]
 );
 create index ui_events_at_idx on hopper.ui_events (at);
+create index ui_events_note_idx on hopper.ui_events (note_id) where note_id is not null;
 alter table hopper.ui_events enable row level security;
 
 create table hopper.batches (
@@ -404,3 +412,31 @@ end $function$;
 
 create trigger notes_pattern_lock before insert on hopper.notes
   for each row execute function hopper.pattern_lock();
+
+-- Opens, searches and other MCP calls a week, by who did them. Age is how old the note was when it was opened
+-- or pulled up by a search, so "older than 90 days" shows whether old saves come back.
+create or replace view hopper.revisits_weekly as
+  with ev as (
+    select date_trunc('week', at)::date as week, actor, event, count(*)::int as events
+    from hopper.ui_events where event in ('note_open', 'search', 'mcp_call')
+    group by 1, 2, 3
+  ),
+  touched as (
+    select e.at, e.actor, e.event, e.note_id from hopper.ui_events e where e.note_id is not null
+    union all
+    select e.at, e.actor, e.event, r.note_id from hopper.ui_events e, unnest(e.result_ids) as r(note_id)
+  ),
+  ages as (
+    select date_trunc('week', t.at)::date as week, t.actor, t.event, t.note_id,
+           extract(epoch from t.at - n.created_at) / 86400 as age_days
+    from touched t join hopper.notes n on n.id = t.note_id
+  ),
+  ag as (
+    select week, actor, event, count(distinct note_id)::int as notes,
+           round(percentile_cont(0.5) within group (order by age_days))::int as median_age_days,
+           count(distinct note_id) filter (where age_days > 90)::int as notes_older_than_90_days
+    from ages group by 1, 2, 3
+  )
+  select ev.week, ev.actor, ev.event, ev.events, coalesce(ag.notes, 0) as notes, ag.median_age_days,
+         coalesce(ag.notes_older_than_90_days, 0) as notes_older_than_90_days
+  from ev left join ag using (week, actor, event);
