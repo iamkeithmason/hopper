@@ -21,6 +21,8 @@
 -- and the view hopper.capture_counts_weekly.
 -- 20261125191500_hopper_transcripts (HOP-61): note_links.transcript_summary, transcript_language, transcript_source,
 -- transcript_at and transcript_model, and the notes_clear_ai_on_lock trigger (locking drops video summaries).
+-- 20261125213000_hopper_set_reads (HOP-31): notes.set_read, notes_for_ai carries it, the notes_clear_set_read_on_lock
+-- trigger, hopper.sets_waiting(), and design_sweep also runs when a set read is waiting.
 --
 -- Extensions used (in schema extensions): vector, pg_net, pg_cron.
 -- Grants: every table and view here has access revoked from public, anon and authenticated.
@@ -58,6 +60,7 @@ create table hopper.notes (
   anti_reference boolean not null default false,
   capture_route text,
   capture_device text,
+  set_read jsonb,                         -- HOP-31: the read of the note's images as a set (hopper-design)
   constraint notes_pkey primary key (id),
   constraint notes_keep_file_key unique (keep_file),
   constraint notes_confidence_check check (confidence in ('high','medium','low')),
@@ -309,9 +312,9 @@ create or replace view hopper.note_cards as
 create or replace view hopper.notes_for_ai as
  select id, source, title, body, list_items, created_at, edited_at, archived, pinned,
    keep_labels, format, period, summary, confidence, cull_candidate, tagged_at, reviewed,
-   aesthetics, why_saved, anti_reference
+   aesthetics, why_saved, anti_reference, set_read
  from hopper.notes
- where is_locked = false;
+ where is_locked = false and deleted_at is null;
 
 -- Functions
 
@@ -328,6 +331,32 @@ end
 $$;
 create trigger notes_clear_ai_on_lock after update of is_locked on hopper.notes
   for each row execute function hopper.clear_ai_on_lock();
+
+-- Locking a note drops its set read (before the update, so the row is written once).
+create or replace function hopper.clear_set_read_on_lock() returns trigger
+  language plpgsql set search_path to ''
+as $$
+begin
+  if new.is_locked and not old.is_locked then new.set_read := null; end if;
+  return new;
+end
+$$;
+drop trigger if exists notes_clear_set_read_on_lock on hopper.notes;
+create trigger notes_clear_set_read_on_lock before update of is_locked on hopper.notes
+  for each row execute function hopper.clear_set_read_on_lock();
+
+-- Notes waiting for a set read: unlocked, cleared by the tagger, two or more of their own images (or page figures),
+-- every one already read on its own, and no set read yet or one made from a different number of images.
+create or replace function hopper.sets_waiting() returns setof uuid
+  language sql stable set search_path to ''
+as $$
+  select n.id from hopper.notes_for_ai n
+  join hopper.attachments a on a.note_id = n.id and a.storage_path is not null and (a.image_role is null or a.image_role = 'figure')
+  where n.tagged_at is not null
+  group by n.id, n.set_read
+  having count(*) >= 2 and bool_and(a.design_read is not null)
+     and (n.set_read is null or coalesce((n.set_read->>'n')::int, 0) <> least(count(*), 8))
+$$;
 
 -- Calls a hopper-* edge function from the database via pg_net, using the Vault secret.
 create or replace function hopper.call_fn(p_slug text, p_body jsonb, p_timeout_ms integer default 150000)

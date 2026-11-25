@@ -26,7 +26,7 @@ import { measure, imageSize } from "./palette.ts";
 //   { ids: [...], write?, redo?, model? }   up to 2 images on up to 10 notes, by note id
 //   { next: n, write?, model?, stale? }     next n images (max 2) with no design read yet, newest first;
 //                                           with stale, also reference reads from an older READ_VERSION
-//   { set: id, model? }                     HOP-31 trial: one read of a note's images as a set (dry run, not saved)
+//   { set: id, write?, model? }             HOP-31: one read of a note's images as a set (Sonnet 5.5 by default)
 // Two images a call, one after another: decoding more ran past the edge function's compute limit.
 // write defaults to false (dry run: returns the reads without saving). redo re-reads images already read
 // (and, with pages: true, pages too). images_only skips page reads. Each call reads one waiting page, or else images.
@@ -500,11 +500,14 @@ async function refreshEmbeddings(noteIds: string[], token: string) {
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
 
-// HOP-31 (trial): a set read, one read of all of a note's own images together: what kinds of page or screen the set
-// holds, what stays the same across them and what changes, and how to borrow from the set as a whole. Each image's
-// own design read (summary, kind) goes in as text beside it. Dry run only for now: nothing is saved.
-// Body: { set: <note id>, model? }. Up to SET_MAX images, in the order they were saved.
+// HOP-31: a set read, one read of all of a note's own images (and page figures) together: what kinds of page or screen
+// the set holds, what stays the same across them and what changes, and how to borrow from the set as a whole. Each
+// image's own design read (summary, kind) goes in as text beside it. Saved to notes.set_read with n, the number of
+// images it covers, so a note that gains or loses images is read again (hopper.sets_waiting()). Sonnet 5.5 by
+// default: in the 25 Nov trial it read sets well at about 5p a set. The sweep reads one waiting set a run, once no
+// single image or page is waiting. Body: { set: <note id>, write?, model? }. Up to SET_MAX images.
 const SET_MAX = 8;
+const SET_MODEL = "claude-sonnet-5-5";
 const SET_TOOL = {
   name: "record_set_read",
   description: "Record a design read of a set of images saved together on one note.",
@@ -531,7 +534,8 @@ async function readSet(noteId: string, model: string, key: string) {
       from hopper.attachments a join hopper.notes_for_ai n on n.id = a.note_id
       where a.note_id = ${noteId} and n.tagged_at is not null and a.storage_path is not null and ${sql.unsafe(PER_IMAGE)}
       order by a.position_from_top_px_at_1440 nulls first, a.id limit ${SET_MAX}`;
-  if ((atts as any[]).length < 2) return { error: "fewer than two images" };
+  const n = (atts as any[]).length;
+  if (n < 2) return { n, error: "fewer than two images" };
   const content: any[] = [];
   let i = 0;
   for (const a of atts as any[]) {
@@ -541,16 +545,27 @@ async function readSet(noteId: string, model: string, key: string) {
     content.push({ type: "text", text: `Image ${i}${a.kind ? ` (${a.kind})` : ""}${a.summary ? `: earlier read, ${a.summary}` : ""}` },
       { type: "image", source: { type: "base64", media_type: img.mime, data: encodeBase64(img.bytes) } });
   }
-  if (i < 2) return { error: "fewer than two readable images" };
+  if (i < 2) return { n, error: "fewer than two readable images" };
   content.push({ type: "text", text: `Call record_set_read for these ${i} images.` });
   const p: any = { model, max_tokens: 8000, system: SET_SYSTEM, tools: [SET_TOOL], tool_choice: { type: "auto" }, messages: [{ role: "user", content }] };
   if (model !== "claude-haiku-5-5") { p.output_config = { effort: "medium" }; p.fallbacks = "default"; }
   const r = await fetch(`${API}/messages`, { method: "POST", headers: headers(key, model), body: JSON.stringify(p) });
   const j = await r.json();
-  if (!r.ok) return { error: j?.error?.message ?? `api ${r.status}` };
+  if (!r.ok) return { n, error: j?.error?.message ?? `api ${r.status}`, retry: true };
   const use = (j.content ?? []).find((c: any) => c.type === "tool_use" && c.name === "record_set_read");
-  if (!use) return { error: "no set read", stop: j.stop_reason };
-  return { images: i, read: use.input, usage: j.usage, served_model: j.model };
+  if (!use) return { n, error: "no set read", stop: j.stop_reason };
+  return { n, images: i, read: use.input, usage: j.usage, served_model: j.model };
+}
+
+// A failed set read is saved too (with its error), so the sweep doesn't try the same set every run; an API error
+// (overload, credit) is left to retry. The lock is checked again at write time.
+async function saveSet(noteId: string, out: any, model: string) {
+  if (out.retry) return { saved: false, reason: "will retry" };
+  const set = out.read
+    ? { v: 1, n: out.n, images: out.images, model: out.served_model ?? model, read_at: new Date().toISOString(), ...out.read }
+    : { v: 1, n: out.n, error: out.error, read_at: new Date().toISOString() };
+  const rows = await sql`update hopper.notes set set_read = ${sql.json(set)} where id = ${noteId} and not is_locked and deleted_at is null returning id`;
+  return { saved: rows.length > 0 };
 }
 
 Deno.serve(async (req: Request) => {
@@ -565,7 +580,12 @@ Deno.serve(async (req: Request) => {
     const model = body.model ?? DEFAULT_MODEL;
     if (!MODELS.includes(model)) return new Response("unknown model", { status: 400 });
     const write = body.write === true, redo = body.redo === true, stale = body.stale === true && !body.ids;
-    if (typeof body.set === "string") return json({ model, note_id: body.set, ...(await readSet(body.set, model, key)) });
+    if (typeof body.set === "string") {
+      const setModel = body.model ?? SET_MODEL;
+      const out: any = await readSet(body.set, setModel, key);
+      if (write) out.write = await saveSet(body.set, out, setModel);
+      return json({ model: setModel, note_id: body.set, ...out });
+    }
 
     const ids: string[] | null = Array.isArray(body.ids) ? body.ids : null;
     if (ids && ids.length > 10) return new Response("send up to 10 ids", { status: 400 });
@@ -609,6 +629,16 @@ Deno.serve(async (req: Request) => {
       const out: any = await readOne(a, model, key, ctx);
       if (write && out.read) out.write = await saveRead(a, out, model);
       results.push({ attachment_id: a.id, note_id: a.note_id, ...out });
+    }
+    // Nothing single waiting: read one waiting set (the sweep's call, ids not given).
+    if (!pages.length && !(atts as any[]).length && !ids && write) {
+      const [w] = await sql`select id from hopper.sets_waiting() as id limit 1`;
+      if (w) {
+        const setModel = MODELS.includes(body.set_model) ? body.set_model : SET_MODEL;
+        const out: any = await readSet(w.id, setModel, key);
+        out.write = await saveSet(w.id, out, setModel);
+        results.push({ set: w.id, ...out });
+      }
     }
     if (write) await refreshEmbeddings(results.filter((r) => r.write?.saved && (r.page || r.read?.is_reference)).map((r) => r.note_id), token);
 
