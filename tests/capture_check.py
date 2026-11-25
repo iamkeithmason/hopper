@@ -76,7 +76,7 @@ def main():
             errors = []
             pg.on("pageerror", lambda e: errors.append(str(e)))
             pg.goto(url); pg.wait_for_timeout(800)
-            pg.click("#new-btn"); pg.wait_for_timeout(200)
+            pg.click("#new-btn:visible, #lb-new:visible"); pg.wait_for_timeout(200)
             check(pg.is_hidden("#c-preview"), f"{w}: a new note opens with no preview")
             check(pg.is_visible("label:has(#c-file)"), f"{w}: the Image button shows on the sheet")
 
@@ -113,7 +113,7 @@ def main():
                 check(c.get("route") == "new" and c.get("touch") in (True, False), f"{w}: the + button saves with route new ({c.get('route')})")
             check(pg.is_hidden("#capture"), f"{w}: the sheet closes after saving")
 
-            pg.click("#new-btn"); pg.wait_for_timeout(200)
+            pg.click("#new-btn:visible, #lb-new:visible"); pg.wait_for_timeout(200)
             check(pg.evaluate(thumbs) == 0, f"{w}: the next new note starts with no images")
             pg.set_input_files("#c-file", [os.path.join(tmp, "pic0.png")]); pg.wait_for_timeout(200)
             pg.click("#capture-save"); pg.wait_for_timeout(800)

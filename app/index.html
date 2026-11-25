@@ -2,7 +2,7 @@
 <html lang="en-GB">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#1c1b19">
 <meta name="robots" content="noindex, nofollow">
 <title>Hopper</title>
@@ -25,6 +25,11 @@
   <symbol id="i-image" viewBox="0 0 24 24"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 16H5V5h14zm-5.1-6.7-2.8 3.5-2-2.4L6 17h12z"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.8 9.94l-3.75-3.75zm2.92 2.33H5v-.92l9.06-9.06.92.92zM20.7 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8z"/></symbol>
+  <symbol id="i-bin" viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><path d="M10.1 15.6 11.5 17l5-5-5-5-1.4 1.4 2.6 2.6H3v2h9.7zM19 3H5a2 2 0 0 0-2 2v4h2V5h14v14H5v-4H3v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></symbol>
   <symbol id="i-m-video" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></symbol>
   <symbol id="i-m-audio" viewBox="0 0 24 24"><path d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3z"/></symbol>
   <symbol id="i-m-pdf" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm4 18H6V4h7v5h5zM8 12h8v2H8zm0 4h8v2H8z"/></symbol>
@@ -72,6 +77,15 @@
     <div id="feed" class="feed"></div>
     <div id="more" class="center muted"></div>
   </main>
+  <!-- Phone (HOP-39, left-handed): one bar at the bottom. New on the left; the wide button says where you are and
+       opens the navigation sheet. Inside a project, its topics float just above the bar. The top header is hidden below 700px. -->
+  <div id="lbar" class="lbar">
+    <nav id="lb-topics" class="lb-topics" aria-label="Topics" hidden></nav>
+    <div class="lb-row">
+    <button id="lb-new" class="lb-new" aria-label="New note"><svg><use href="#i-plus"/></svg></button>
+    <button id="lb-open" class="lb-pill" aria-label="Search, projects and views"><svg><use href="#i-search"/></svg><span id="lb-where">All notes</span><span id="lb-hint">· Search, projects…</span></button>
+    </div>
+  </div>
   <div id="menu" class="menu" hidden>
     <button id="all-projects-btn">All projects</button>
     <button id="archived-btn">Archived</button>
@@ -88,6 +102,17 @@
   </div>
 </section>
 
+<!-- Phone navigation sheet: grows upward from the search field, likeliest choices nearest the thumb -->
+<section id="nav-sheet" class="overlay" hidden>
+  <div class="sheet nav-sheet">
+    <div class="grab"></div>
+    <div id="ns-list" class="ns-list"></div>
+    <form id="ns-form" class="ns-foot" role="search">
+      <input id="ns-q" type="search" placeholder="Search notes or jump to a project" autocomplete="off" enterkeyhint="search">
+    </form>
+  </div>
+</section>
+
 <!-- Note editor -->
 <section id="detail" class="overlay" hidden>
   <article id="d-sheet" class="sheet tall detail">
@@ -98,12 +123,14 @@
     </div>
     <div id="d-body" class="d-body"></div>
     <div class="editor-foot">
+      <button class="icon-btn phone-only" id="d-back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
       <button class="icon-btn" id="d-pin" aria-label="Pin"><svg><use href="#i-pin"/></svg></button>
       <button class="icon-btn" id="d-lock" aria-label="Lock"><svg><use href="#i-lock"/></svg></button>
       <button class="icon-btn" id="d-archive" aria-label="Archive"><svg><use href="#i-archive"/></svg></button>
       <span class="spacer muted small" id="d-meta"></span>
       <select id="d-format" aria-label="Format"></select>
       <button class="icon-btn" id="d-colour-btn" aria-label="Colour"><svg><use href="#i-palette"/></svg></button>
+      <button class="icon-btn phone-only" id="d-more2" aria-label="More"><svg><use href="#i-more"/></svg></button>
     </div>
     <div id="d-colours" class="pop colours" hidden></div>
     <div id="d-menu" class="pop menu-pop" hidden>
