@@ -4,7 +4,7 @@
 --           measured from navigation so entrance motion is caught.
 --   type_scale: the page's distinct text treatments (family, size, weight, line height, tracking) with the roles
 --           and counts of where each is used, and its icon sizes with their boxes, at 1440 and 390 wide.
--- Measurements only: no page text beyond short role labels, and nothing here is sent to a model.
+-- Measurements only, from public pages on unlocked notes: each text treatment keeps a sample of up to 40 characters.
 
 alter table hopper.note_links drop constraint if exists note_links_fetch_status_check;
 alter table hopper.note_links add constraint note_links_fetch_status_check
