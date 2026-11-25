@@ -11,6 +11,11 @@ const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 3 
 const PAGE_CAP = 4000; // characters of readable text kept per link
 const MAX_BYTES = 1_500_000; // stop reading a response after this
 const UA = "Mozilla/5.0 (compatible; HopperFetch/1.0; personal notes archive)";
+const BROWSER_HEADERS = {
+  "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+  "accept-language": "en-GB,en;q=0.9",
+};
 // Private workspaces and sign-in walls: never worth fetching.
 const PRIVATE = /(^|\.)(docs\.google\.com|drive\.google\.com|mail\.google\.com|notion\.so|notion\.site|atlassian\.net|figma\.com|miro\.com|funretrospectives\.com|slack\.com|trello\.com|app\.[a-z0-9-]+\.[a-z]+)$/i;
 const LOCAL = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1)/;
@@ -115,7 +120,12 @@ async function fetchOne(link: { url: string; kind: string }): Promise<Result> {
       return { status: "ok", http: r.status, title: j.title ?? null, creator: j.author_name ?? null, thumbnail: j.thumbnail_url ?? null, dead: false };
     }
 
-    const r = await fetchWithTimeout(u.href);
+    let r = await fetchWithTimeout(u.href);
+    // HOP-50: a page that refuses Hopper is asked once more as a browser would ask.
+    if ([401, 403, 429, 451, 503, 999].includes(r.status)) {
+      r.body?.cancel();
+      r = await fetchWithTimeout(u.href, { headers: BROWSER_HEADERS });
+    }
     if (r.status === 404 || r.status === 410) { r.body?.cancel(); return { status: "dead", http: r.status, dead: true }; }
     if ([401, 403, 429, 451, 999].includes(r.status)) { r.body?.cancel(); return { status: "blocked", http: r.status, dead: false }; }
     if (r.status >= 400) { r.body?.cancel(); return { status: "error", http: r.status, dead: false }; }

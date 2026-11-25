@@ -21,6 +21,9 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // "note" also returns the note's aesthetic tags and, for images judged design references, their design read.
 // Bin: "delete" moves a note to the Bin (deleted_at); the nightly hopper-bin job erases it after BIN_DAYS.
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
+// "refetch" { id } reads a note's page again, plainly and then in a real browser (HOP-50); "add_images" { id, images }
+// adds pictures to a saved note. Captures whose page refuses the fetch get the same browser rescue in the background.
+// "measure" { id, url? } measures a captured page's motion and type (HOP-55, 56, 57); desktop captures do it in the background.
 
 const URL_ = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -180,7 +183,25 @@ async function keepPicture(noteId: string, p: Picture) {
   return rows.length > 0;
 }
 
-type PageMeta = { url: string; title?: string; text?: string; image?: string; ok: boolean; kind?: string; provider?: string; media_id?: string; picture?: Picture };
+type PageMeta = { url: string; title?: string; text?: string; image?: string; ok: boolean; kind?: string; provider?: string; media_id?: string; picture?: Picture; status?: number };
+
+// HOP-50: tracking parameters say nothing about the page, and some sites refuse odd query strings, so they are
+// dropped before fetching (the saved address keeps them). A page that refuses Hopper is asked once more as a browser.
+const TRACKING = /^(utm_.*|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|igshid|igsh|_hsenc|_hsmi|ref_src|si)$/i;
+function cleanUrl(u: string) {
+  try {
+    const x = new URL(u);
+    for (const k of [...x.searchParams.keys()]) if (TRACKING.test(k)) x.searchParams.delete(k);
+    return x.href;
+  } catch { return u; }
+}
+const BROWSER_HEADERS = {
+  "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+  "accept-language": "en-GB,en;q=0.9",
+};
+// Sign-in walls and bot checks: a page whose title says so wasn't really read.
+const WALL = /just a moment|attention required|access denied|are you a (robot|human)|verify you are human|captcha|forbidden|\b403\b|security check|^(log|sign) ?in\b/i;
 async function pageMeta(url: string): Promise<PageMeta> {
   const out: PageMeta = { url, ok: false };
   try {
@@ -203,10 +224,16 @@ async function pageMeta(url: string): Promise<PageMeta> {
         return { url, title: j.title, text: j.extract, image: j.thumbnail?.source, ok: true };
       }
     }
-    const r = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(7000),
+    const target = cleanUrl(url);
+    let r = await fetch(target, { redirect: "follow", signal: AbortSignal.timeout(7000),
       headers: { "user-agent": UA, "accept-language": "en-GB,en;q=0.8" } });
+    if (!r.ok && r.status !== 404 && r.status !== 410) {
+      await r.body?.cancel();
+      r = await fetch(target, { redirect: "follow", signal: AbortSignal.timeout(7000), headers: BROWSER_HEADERS });
+    }
     out.url = r.url || url;
-    if (!r.ok) return out;
+    out.status = r.status;
+    if (!r.ok) { await r.body?.cancel(); return out; }
     if ((r.headers.get("content-type") ?? "").toLowerCase().startsWith("image/")) {
       // The link is the picture itself: keep it, and call the link fine even though there is no page.
       out.picture = (await readPicture(r, out.url)) ?? undefined;
@@ -233,9 +260,21 @@ async function pageMeta(url: string): Promise<PageMeta> {
   return out;
 }
 
+// Search weights (HOP-34, the same as hopper-mcp's): a keyword hit adds this to the semantic score, by the best field
+// it lands in. Semantic-only hits under SEM_FLOOR are left out: gte-small scores noise at 0.80 to 0.82 (Keith chose 0.82).
+const KW = { title: 0.2, tag: 0.15, summary: 0.1, body: 0.05 };
+const SEM_FLOOR = 0.82;
+// A case-insensitive whole-word pattern for the query (Postgres \m and \M mark word starts and ends).
+function wordPattern(q: string) {
+  const body = q.replace(/[\\^$.|?*+()[\]{}]/g, "\\$&").replace(/\s+/g, "\\s+");
+  return `${/^\w/.test(q) ? "\\m" : ""}${body}${/\w$/.test(q) ? "\\M" : ""}`;
+}
+
 // Turn a bare-link note into a bookmark with its page details. Safe to run again on the same note.
 // anySite: keep the page's preview image whatever the site (captures Claude makes for reference, where the page itself is the point).
-async function linkify(id: string, anySite = false) {
+// Returns whether the page was read, and the link it tried.
+const BLOCKED = [401, 403, 429, 451, 503, 999];
+async function linkify(id: string, anySite = false): Promise<{ ok: boolean; linkId: string; url: string } | undefined> {
   const [n] = await sql`select id, title, body, why_saved, summary, is_locked from hopper.notes where id = ${id}`;
   if (!n || n.is_locked) return;
   let [link] = await sql`select id, url, page_title from hopper.note_links where note_id = ${id} limit 1`;
@@ -252,7 +291,7 @@ async function linkify(id: string, anySite = false) {
       thumbnail_url = coalesce(${m.image ?? null}::text, thumbnail_url),
       kind = coalesce(${m.kind ?? null}::text, kind), provider = coalesce(${m.provider ?? null}::text, provider),
       media_id = coalesce(${m.media_id ?? null}::text, media_id),
-      fetched_at = now(), fetch_status = ${m.ok ? "ok" : "error"}
+      fetched_at = now(), fetch_status = ${m.ok ? "ok" : BLOCKED.includes(m.status ?? 0) ? "blocked" : "error"}
     where id = ${link.id}`;
   await sql`update hopper.notes set
       body = case when ${Boolean(fromBody)}::boolean then null else body end,
@@ -274,6 +313,38 @@ async function linkify(id: string, anySite = false) {
         tagged_at = null
       where id = ${id} and not is_locked`;
   }
+  return { ok: m.ok, linkId: link.id, url };
+}
+
+// HOP-50: a page that refuses Hopper's fetch is opened in the screenshot service's real browser instead. Its title,
+// description and preview image are read off the live page, and the first screen becomes the note's picture when the
+// page has no preview image of its own (and the note no picture). The link's fetch_status becomes 'browser'. When that
+// fails too the link keeps its failed status, and the open note says it couldn't read the page.
+async function rescue(id: string, linkId: string, url: string) {
+  if (!/^https?:\/\//i.test(url)) return false;
+  const [n] = await sql`select is_locked, deleted_at from hopper.notes where id = ${id}`;
+  if (!n || n.is_locked || n.deleted_at) return false;
+  const shot = await takeShot(cleanUrl(url), ["first-screen-1440"], false);
+  if ("error" in shot || (shot.status ?? 200) >= 400 || !shot.first || WALL.test(shot.title ?? "")) return false;
+  const desc = shot.meta?.description?.trim() || null;
+  const title = shot.title?.trim() || null;
+  await sql`update hopper.note_links set page_title = coalesce(page_title, ${title}::text), page_text = coalesce(page_text, ${desc}::text),
+              thumbnail_url = coalesce(thumbnail_url, ${shot.meta?.image ?? null}::text), fetch_status = 'browser', fetched_at = now()
+            where id = ${linkId}`;
+  await sql`update hopper.notes set title = coalesce(nullif(title, ''), ${title}::text), summary = coalesce(summary, left(${desc}::text, 220))
+            where id = ${id} and not is_locked`;
+  let pic: Picture | null = shot.meta?.image ? await fetchPicture(shot.meta.image, url) : null;
+  if (!pic) pic = { bytes: decodeBase64(shot.first), mime: "image/jpeg", source: `rescue:${url}#first-screen-1440` };
+  if (await keepPicture(id, pic)) await sql`update hopper.notes set tagged_at = null where id = ${id} and not is_locked`;
+  try { await embedAndFile(id, false); } catch (_) { /* search catches up on the next edit */ }
+  return true;
+}
+
+// Work that carries on after the reply (EdgeRuntime.waitUntil), so a slow rescue never holds up a save.
+function background(p: Promise<unknown>) {
+  const q = p.catch((e) => console.error("background", String(e).slice(0, 200)));
+  // @ts-ignore EdgeRuntime is provided by the Supabase edge runtime
+  try { EdgeRuntime.waitUntil(q); } catch (_) { /* it still runs while the worker lives */ }
 }
 
 // Page screenshots (hopper-shot): the Vercel app's /api/shot renders the page in headless Chrome and returns the
@@ -282,9 +353,10 @@ async function linkify(id: string, anySite = false) {
 // views limits what is taken: desktop (first screen and whole page) and phone. The token is in Vault ('hopper_shot_token').
 type Figure = { src: string; alt?: string; caption?: string; width: number; height: number; top: number };
 type Shot = { first: string | null; full: string | null; phone: string | null; width: number; height: number; full_height: number | null; full_scale?: number; clipped: boolean; title: string | null;
-  figures?: Figure[]; videos?: number | null; motion?: { where: string; top: number; image: string; changed_pct: number }[] };
+  figures?: Figure[]; videos?: number | null; motion?: { where: string; top: number; image: string; changed_pct: number }[];
+  status?: number | null; meta?: { image?: string | null; description?: string | null } | null };
 const ROLES = ["first-screen-1440", "full-page", "first-screen-390"];
-async function takeShot(url: string, roles = ROLES): Promise<Shot | { error: string }> {
+async function takeShot(url: string, roles = ROLES, motion = true): Promise<Shot | { error: string }> {
   try {
     const [cfg] = await sql`select (select value from hopper.settings where key = 'shot_url') as shot_url,
       (select decrypted_secret from vault.decrypted_secrets where name = 'hopper_shot_token') as tok`;
@@ -293,12 +365,75 @@ async function takeShot(url: string, roles = ROLES): Promise<Shot | { error: str
       method: "POST", signal: AbortSignal.timeout(75000),
       headers: { "content-type": "application/json", "x-shot-token": cfg.tok },
       body: JSON.stringify({ url, desktop: roles.some((x) => x !== "first-screen-390"), full: roles.includes("full-page"),
-                             phone: roles.includes("first-screen-390") }),
+                             phone: roles.includes("first-screen-390"), motion }),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !(j.first || j.phone)) return { error: j.error ? `${j.error}${j.stage ? ` (${j.stage})` : ""}` : `screenshot ${r.status}` };
     return j as Shot;
   } catch (e) { return { error: `screenshot: ${String(e).slice(0, 120)}` }; }
+}
+
+// HOP-55, 56, 57: the page measured in the capture browser, in two calls side by side (each has its own 60 seconds):
+// motion (what moves, how long, which easing, how far, staggers, load or scroll, what reduced motion keeps, which
+// library) and type (text treatments with their roles, and icon sizes, at 1440 and 390). Both go on the page's link
+// (note_links.motion, type_scale). Strips of the entrance and the first scroll reveal join the page's motion strips.
+// Measurements cost no model credit. Locked and binned notes are left alone.
+async function shotCall(body: Record<string, unknown>) {
+  const [cfg] = await sql`select (select value from hopper.settings where key = 'shot_url') as shot_url,
+    (select decrypted_secret from vault.decrypted_secrets where name = 'hopper_shot_token') as tok`;
+  if (!cfg?.shot_url || !cfg?.tok) return { error: "screenshots aren't set up" };
+  try {
+    const r = await fetch(cfg.shot_url, { method: "POST", signal: AbortSignal.timeout(75000),
+      headers: { "content-type": "application/json", "x-shot-token": cfg.tok }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    return r.ok ? j : { error: j.error ?? `measure ${r.status}` };
+  } catch (e) { return { error: `measure: ${String(e).slice(0, 120)}` }; }
+}
+async function measurePage(noteId: string, pageUrl: string) {
+  const [n] = await sql`select is_locked, deleted_at from hopper.notes where id = ${noteId}`;
+  if (!n || n.is_locked || n.deleted_at) return { error: "not available" };
+  const [motion, type] = await Promise.all([shotCall({ url: pageUrl, measure: "motion" }), shotCall({ url: pageUrl, measure: "type" })]);
+  const out: Record<string, unknown> = {};
+  if (!motion.error && motion.motion) {
+    await sql`update hopper.note_links set motion = ${sql.json(motion.motion)} where note_id = ${noteId} and url = ${pageUrl}`;
+    out.motion = true;
+    const stem = `${slugOf(pageUrl)}-${(await sha256(pageUrl)).slice(0, 6)}`;
+    const names: Record<string, string> = { "first screen as it loads": "entrance", "first scroll reveal": "scroll-reveal" };
+    const keep: string[] = [];
+    for (const m of (motion.strips ?? []) as any[]) {
+      const tag = names[m.where];
+      if (!tag || typeof m.image !== "string") continue;
+      const bytes = decodeBase64(m.image);
+      const path = `shot/${noteId}/${stem}--motion-${tag}.jpg`;
+      const { error } = await storage.upload(path, bytes, { contentType: "image/jpeg", upsert: true });
+      if (error) continue;
+      const size = pictureSize(bytes);
+      const original = `capture:${pageUrl}#motion-${tag}`;
+      const caption = tag === "entrance"
+        ? `three frames of the first screen as it loads, 0, 0.6 and 1.5 seconds after it appears, left to right (${m.changed_pct}% of the view changes)`
+        : `three frames of the first scroll reveal, 0, 0.4 and 0.9 seconds after scrolling to ${m.top} px, left to right (${m.changed_pct}% of the view changes)`;
+      await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption,
+                  image_role, source_page_url, position_from_top_px_at_1440, captured_on, content_sha256)
+                values (${noteId}, ${original}, ${path}, 'image/jpeg', ${size?.width ?? null}, ${size?.height ?? null}, ${caption},
+                  'motion-strip', ${pageUrl}, ${m.top}, current_date, ${await bytesHash(bytes)})
+                on conflict (note_id, original_file) do update set storage_path = excluded.storage_path, width = excluded.width,
+                  height = excluded.height, caption = excluded.caption, position_from_top_px_at_1440 = excluded.position_from_top_px_at_1440,
+                  captured_on = excluded.captured_on, content_sha256 = excluded.content_sha256, design_read = null`;
+      keep.push(original);
+    }
+    // A page that no longer moves on entry or on scroll loses its old strip of that kind.
+    const gone = await sql`delete from hopper.attachments where note_id = ${noteId} and source_page_url = ${pageUrl}
+                             and original_file in (${`capture:${pageUrl}#motion-entrance`}, ${`capture:${pageUrl}#motion-scroll-reveal`})
+                             and not (original_file = any(${keep}::text[])) returning storage_path`;
+    const paths = gone.map((g: any) => g.storage_path).filter(Boolean);
+    if (paths.length) await storage.remove(paths);
+    out.strips = keep.length;
+  } else out.motion_error = motion.error ?? "no motion reading";
+  if (!type.error && type.type_scale) {
+    await sql`update hopper.note_links set type_scale = ${sql.json(type.type_scale)} where note_id = ${noteId} and url = ${pageUrl}`;
+    out.type = true;
+  } else out.type_error = type.error ?? "no type reading";
+  return out;
 }
 
 // Tall pages come back scaled down (to fit the 8000 px image limit), and past 40% cut short.
@@ -604,18 +739,34 @@ Deno.serve(async (req: Request) => {
         const q = String(b.q ?? "").trim();
         if (!q) return json({ notes: [] });
         const vec = await embed(q);
-        const like = `%${q.replace(/[%_]/g, "")}%`;
+        // HOP-34, as in hopper-mcp's search_notes: whole-word keyword hits weighted by field and added to the semantic
+        // score; semantic-only hits under SEM_FLOOR left out.
+        const word = wordPattern(q);
         const rows = await sql`
           with sem as (
-            select e.note_id, 1 - (e.embedding <=> ${vec}::extensions.vector) as score
-            from hopper.note_embeddings e order by e.embedding <=> ${vec}::extensions.vector limit 40),
+            select e.note_id from hopper.note_embeddings e order by e.embedding <=> ${vec}::extensions.vector limit 40),
           kw as (
-            select n.id as note_id, 1.0 as score from hopper.notes n
-            where not n.is_locked and n.deleted_at is null and (n.title ilike ${like} or n.body ilike ${like}) limit 15),
-          hits as (select note_id, max(score) + case when bool_or(note_id in (select note_id from kw)) then 0.03 else 0 end as score
-                   from (select * from sem union all select * from kw) u group by note_id)
+            select n.id as note_id,
+              case when n.title ~* ${word} then ${KW.title}::float8
+                   when exists (select 1 from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = n.id and w.title ~* ${word})
+                     or exists (select 1 from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = n.id and p.name ~* ${word})
+                     then ${KW.tag}::float8
+                   when n.summary ~* ${word} then ${KW.summary}::float8
+                   else ${KW.body}::float8 end as bonus
+            from hopper.notes n
+            where not n.is_locked and n.deleted_at is null
+              and (n.title ~* ${word} or n.summary ~* ${word} or n.body ~* ${word}
+                   or exists (select 1 from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = n.id and w.title ~* ${word})
+                   or exists (select 1 from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = n.id and p.name ~* ${word}))
+            order by bonus desc limit 30),
+          cand as (select note_id from sem union select note_id from kw),
+          hits as (
+            select c.note_id, coalesce(1 - (e.embedding <=> ${vec}::extensions.vector), 0) + coalesce(k.bonus, 0) as score,
+                   coalesce(1 - (e.embedding <=> ${vec}::extensions.vector), 0) as sem, k.bonus
+            from cand c left join hopper.note_embeddings e on e.note_id = c.note_id left join kw k on k.note_id = c.note_id)
           select n.*, h.score from hits h join hopper.note_cards n on n.id = h.note_id
-          where not n.is_locked and n.deleted_at is null order by h.score desc limit 40`;
+          where not n.is_locked and n.deleted_at is null and (h.bonus is not null or h.sem >= ${SEM_FLOOR})
+          order by h.score desc limit 40`;
         return json({ notes: await cards(rows) });
       }
       case "note": {
@@ -632,7 +783,7 @@ Deno.serve(async (req: Request) => {
           union all select 'person', p.name, np.confidence, np.confirmed, null, null from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = ${n.id}
           union all select 'work', w.title, nw.confidence, null, null, null from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = ${n.id}`;
         const links = await sql`select url, page_title, page_text, thumbnail_url, captured_on, page_height_px_at_1440, videos_on_page, layout_read,
-                                  kind, transcript_summary, (transcript is not null) as has_transcript
+                                  kind, transcript_summary, (transcript is not null) as has_transcript, fetch_status
                                 from hopper.note_links where note_id = ${n.id} order by (layout_read is null), url`;
         const atts = await sql`select storage_path, caption, design_read, image_role, source_page_url, position_from_top_px_at_1440,
                                  rendered_width_at_1440, caption_on_page
@@ -662,7 +813,8 @@ Deno.serve(async (req: Request) => {
         });
       }
       case "update": {
-        // Title, body, format, colour, pin and archive. Locked and binned notes can't be edited here.
+        // Title, body, why-saved line, format, colour, pin and archive. Locked and binned notes can't be edited here.
+        // why_saved is how a share gets its note after it has been saved (shares save on arrival; the note is optional).
         const [n] = await sql`select id, is_locked, format, source, deleted_at from hopper.notes where id = ${b.id}`;
         if (!n) return json({ error: "not found" }, 404);
         if (n.deleted_at) return IN_BIN();
@@ -676,14 +828,15 @@ Deno.serve(async (req: Request) => {
           update hopper.notes set
             title = case when ${has("title")}::boolean then nullif(trim(${b.title ?? ""}::text), '') else title end,
             body = case when ${has("body")}::boolean then nullif(${b.body ?? ""}::text, '') else body end,
+            why_saved = case when ${has("why_saved")}::boolean then nullif(trim(${b.why_saved ?? ""}::text), '') else why_saved end,
             format = case when ${has("format")}::boolean then ${b.format ?? null}::text else format end,
             keep_color = case when ${has("color")}::boolean then ${b.color ?? null}::text else keep_color end,
             pinned = case when ${has("pinned")}::boolean then ${Boolean(b.pinned)}::boolean else pinned end,
             archived = case when ${has("archived")}::boolean then ${Boolean(b.archived)}::boolean else archived end,
             edited_at = now()
           where id = ${b.id}
-          returning id, edited_at, format, keep_color, pinned, archived`;
-        if ((has("title") || has("body")) && OWN_CAPTURES.includes(n.source)) {
+          returning id, edited_at, format, keep_color, pinned, archived, why_saved`;
+        if ((has("title") || has("body") || has("why_saved")) && OWN_CAPTURES.includes(n.source)) {
           // Marked for a fresh Claude tagging pass; the sweep runs it once the note has been still for two minutes.
           await sql`update hopper.notes set tagged_at = null where id = ${n.id} and not is_locked`;
           const [{ c }] = await sql`select count(*)::int as c from hopper.note_projects where note_id = ${n.id}`;
@@ -826,6 +979,7 @@ Deno.serve(async (req: Request) => {
         if (wantShot) {
           const shot = await takeShot(url!);
           shotResult = "error" in shot ? shot : { kept: await keepShots(n.id, shot, url!), clipped: shot.clipped, full_height: shot.full_height };
+          if (!("error" in shot) && !lock) background(measurePage(n.id, url!));
         }
         if (url) await sql`insert into hopper.note_links (note_id, url, page_title) values (${n.id}, ${url}, ${title}) on conflict (note_id, url) do nothing`;
         for (const [i, im] of images.entries()) {
@@ -853,7 +1007,11 @@ Deno.serve(async (req: Request) => {
                     on conflict (note_id, original_file) do nothing returning id`;
           fetched += rows.length;
         }
-        try { await linkify(n.id, source === "assistant"); } catch (_) { /* the note is saved either way */ }
+        try {
+          const read = await linkify(n.id, source === "assistant");
+          // HOP-50: a page that refused the fetch gets a real browser, after the reply (a screenshot capture already has one).
+          if (read && !read.ok && !wantShot && !lock) background(rescue(n.id, read.linkId, read.url));
+        } catch (_) { /* the note is saved either way */ }
         // HOP-61: the extension reads a video's transcript off the page; keep it on the link and summarise it in the background.
         const transcript = url && typeof b.transcript === "string" ? b.transcript.trim().slice(0, TRANSCRIPT_MAX) : "";
         let transcriptKept = false;
@@ -901,6 +1059,8 @@ Deno.serve(async (req: Request) => {
         const shot = await takeShot(url, roles);
         if ("error" in shot) return json(shot, 502);
         const kept = await keepShots(n.id, shot, url);
+        // A desktop retake measures the page again, after the reply (HOP-55, 56, 57).
+        if (roles.includes("first-screen-1440")) background(measurePage(n.id, url));
         return json({ ok: true, kept, clipped: shot.clipped, full_height: shot.full_height });
       }
       case "prune_shots": {
@@ -929,6 +1089,54 @@ Deno.serve(async (req: Request) => {
         }
         const [{ left }] = await sql`select count(*)::int as left from hopper.attachments where storage_path is not null and content_sha256 is null`;
         return json({ ok: true, hashed, failed, left });
+      }
+      case "measure": {
+        // HOP-55, 56, 57: measure a captured page's motion and type again, without retaking its screenshots.
+        // { id, url? } (the note's first captured page by default). Waits for the readings and says what was stored.
+        const [n] = await sql`select id, is_locked, deleted_at from hopper.notes where id = ${b.id}`;
+        if (!n || n.is_locked) return json({ error: "not available" }, 404);
+        if (n.deleted_at) return IN_BIN();
+        const [link] = b.url
+          ? await sql`select url from hopper.note_links where note_id = ${n.id} and url = ${String(b.url)}`
+          : await sql`select url from hopper.note_links where note_id = ${n.id} order by captured_on is null, url limit 1`;
+        if (!link || !/^https?:\/\//i.test(link.url)) return json({ error: "this note has no captured page at that address" }, 400);
+        return json({ ok: true, url: link.url, ...(await measurePage(n.id, link.url)) });
+      }
+      case "refetch": {
+        // HOP-50 Retry: read the note's page again, plainly and then in a real browser. Says whether it worked.
+        const [n] = await sql`select id, is_locked, deleted_at from hopper.notes where id = ${b.id}`;
+        if (!n || n.is_locked) return json({ error: "not available" }, 404);
+        if (n.deleted_at) return IN_BIN();
+        const read = await linkify(n.id);
+        if (!read) return json({ error: "this note has no web address" }, 400);
+        const ok = read.ok || await rescue(n.id, read.linkId, read.url);
+        if (read.ok) { try { await embedAndFile(n.id, false); } catch (_) { /* search catches up on the next edit */ } }
+        return json({ ok });
+      }
+      case "add_images": {
+        // HOP-50 Add screenshot: pictures added to a saved note (shrunk to JPEG by the app), four per note at most,
+        // not counting page screenshots. The tagger and the design read look again.
+        const [n] = await sql`select id, is_locked, deleted_at from hopper.notes where id = ${b.id}`;
+        if (!n || n.is_locked) return json({ error: "not available" }, 404);
+        if (n.deleted_at) return IN_BIN();
+        const [{ c }] = await sql`select count(*)::int as c from hopper.attachments where note_id = ${n.id} and image_role is null`;
+        const images = (Array.isArray(b.images) ? b.images : []).slice(0, Math.max(0, 4 - c))
+          .filter((im: any) => typeof im?.data === "string" && im.data.length < 4_000_000);
+        if (!images.length) return json({ error: c >= 4 ? "this note already has four images" : "no image" }, 400);
+        let added = 0;
+        for (const im of images) {
+          const bytes = Uint8Array.from(atob(im.data), (ch) => ch.charCodeAt(0));
+          const hash = await bytesHash(bytes);
+          if (await sameOnNote(n.id, hash)) continue;
+          const path = `app/${n.id}/${hash.slice(0, 12)}.jpg`;
+          const { error } = await storage.upload(path, bytes, { contentType: "image/jpeg", upsert: true });
+          if (error) continue;
+          await sql`insert into hopper.attachments (note_id, storage_path, mime, width, height, content_sha256)
+                    values (${n.id}, ${path}, 'image/jpeg', ${Number(im.width) || null}, ${Number(im.height) || null}, ${hash})`;
+          added++;
+        }
+        if (added) await sql`update hopper.notes set tagged_at = null where id = ${n.id} and not is_locked`;
+        return json({ ok: true, added });
       }
       case "relink": {
         // Repair a note saved before links were recognised: linkify, re-embed and file if it has no projects.

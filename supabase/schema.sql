@@ -118,9 +118,11 @@ create table hopper.note_links (
   transcript_source text,                 -- extension (read off the page on save) or assistant (hopper-mcp add_transcript)
   transcript_at timestamp with time zone,
   transcript_model text,
+  motion jsonb,                           -- HOP-55/56: measured motion (durations, easing, delays, travel, stagger, trigger, reduced motion, library)
+  type_scale jsonb,                       -- HOP-57: text treatments and icon sizes at 1440 and 390, with the roles each is used for
   constraint note_links_pkey primary key (id),
   constraint note_links_note_id_url_key unique (note_id, url),
-  constraint note_links_fetch_status_check check (fetch_status in ('ok','dead','blocked','private','timeout','error','skipped')),
+  constraint note_links_fetch_status_check check (fetch_status in ('ok','browser','dead','blocked','private','timeout','error','skipped')),
   constraint note_links_kind_check check (kind in ('article','video','audio','image','product','pdf','social','other')),
   constraint note_links_transcript_source_check check (transcript_source in ('extension','assistant'))
 );

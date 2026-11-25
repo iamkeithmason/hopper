@@ -12,10 +12,13 @@
 //   rendered size and distance from the top; videos counts video players. motion holds up to two motion strips
 //   ({ where, top, image, changed_pct }: three frames a second apart, side by side), only for parts that move.
 //   Pass motion: false to skip them.
+// POST { url, measure: "motion" | "type" } measures instead of shooting (HOP-55, 56, 57; see _measure.js):
+//   motion -> { motion, strips, status }, type -> { type_scale }. Each fits in its own call's 60 seconds.
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
+import { measureMotion, measureType } from "./_measure.js";
 
 // The Claude API takes images up to 8000 px on a side and 5 MB, and the design read sends the stored image as is,
 // so the full-page shot stays inside both. Pages taller than 8000 px are shot scaled down (whole page, smaller), but
@@ -257,6 +260,13 @@ export async function capture(url, width, height, wantFull, lite, wantMotion = f
     out.first = await page.screenshot({ type: "jpeg", quality: 82 });
     out.title = await page.title().catch(() => null);
     out.finalUrl = page.url();
+    // HOP-50: what the live page says about itself, for links Hopper's plain fetch was refused.
+    out.meta = await page.evaluate(() => {
+      const m = (k) => document.querySelector(`meta[property="${k}"], meta[name="${k}"]`)?.getAttribute("content")?.trim() || null;
+      const img = m("og:image") || m("twitter:image");
+      let image = null; try { image = img ? new URL(img, location.href).href : null; } catch {}
+      return { image, description: m("og:description") || m("description") || m("twitter:description") };
+    }).catch(() => null);
 
     stage = "figures";
     Object.assign(out, await pageFigures(page).catch((e) => { console.error("figures failed", url, String(e)); return {}; }));
@@ -287,6 +297,7 @@ export async function capture(url, width, height, wantFull, lite, wantMotion = f
 
 // The first screen on a phone: 390 x 844 at 2x, with a phone browser's user agent, so sites serve their mobile layout.
 // Its own browser, so a crash here never costs the desktop shots.
+const DESKTOP_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0 Safari/537.36 Hopper/1.0";
 const PHONE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1 Hopper/1.0";
 export async function capturePhone(url) {
   let browser;
@@ -327,6 +338,22 @@ export default async function handler(req, res) {
   const wantMotion = body.motion !== false;
   const started = Date.now();
 
+  if (body.measure === "motion" || body.measure === "type") {
+    let browser;
+    try {
+      browser = await launch(width, height);
+      const out = body.measure === "motion"
+        ? await measureMotion(browser, url, width, height, DESKTOP_UA, started)
+        : await measureType(browser, url, DESKTOP_UA, PHONE_UA, started);
+      if (out.error) return res.status(502).json(out);
+      return res.status(200).json(out);
+    } catch (e) {
+      return res.status(502).json({ error: String(e?.message ?? e).slice(0, 300), stage: body.measure });
+    } finally {
+      await browser?.close().catch(() => {});
+    }
+  }
+
   // Headless Chrome sometimes dies mid-shot on heavy pages ("Target closed"). Try once more in lite mode,
   // and keep whichever attempt got further: a first screen on its own is still worth keeping.
   let r = { first: null, full: null, fullHeight: null, clipped: false, scale: 1, title: null, finalUrl: url, status: null };
@@ -351,7 +378,7 @@ export default async function handler(req, res) {
     full: r.full ? Buffer.from(r.full).toString("base64") : null,
     phone: phone ? Buffer.from(phone).toString("base64") : null,
     width, height, full_height: r.fullHeight, full_scale: Math.round(r.scale * 100) / 100, clipped: r.clipped,
-    title: r.title, final_url: r.finalUrl, status: r.status, figures: r.figures ?? [], videos: r.videos ?? null,
+    title: r.title, final_url: r.finalUrl, status: r.status, meta: r.meta ?? null, figures: r.figures ?? [], videos: r.videos ?? null,
     motion: r.motion ?? [],
   });
 }
