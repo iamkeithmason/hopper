@@ -1,4 +1,5 @@
 -- HOP-43: record how and on what each note was captured.
+-- Run by Keith in the Supabase SQL editor on 25 Nov 2026 at 18:13 (the connector approval could not be shown), so it is not listed in supabase_migrations.schema_migrations.
 -- capture_route: share (share sheet into the app), new (the app's + button), extension (browser extension),
 --   mcp (Claude through hopper-mcp), app (saved in the app before routes were recorded),
 --   keep-import, blog-import, notion-clip (imports and clips, from notes.source).

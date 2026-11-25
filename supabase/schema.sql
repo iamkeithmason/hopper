@@ -16,7 +16,7 @@
 -- 20261121091324_hopper_page_reads: design_sweep also runs for captured pages waiting for a page read (note_links.layout_read).
 -- 20261125173617_hopper_assistant_filing: note_projects.added_by also allows 'assistant' (projects Claude sets through the MCP).
 -- 20261125174922_hopper_pin_projects: projects.pinned_at (pinned project pills, HOP-13).
--- HOP-43 capture route (file named for its version below): notes.capture_route and notes.capture_device,
+-- 20261125181300_hopper_capture_route (run by hand in the SQL editor, so not in schema_migrations): notes.capture_route and notes.capture_device,
 -- hopper.route_for_source(), the notes_capture_route insert trigger, a backfill of capture_route from source,
 -- and the view hopper.capture_counts_weekly.
 --
