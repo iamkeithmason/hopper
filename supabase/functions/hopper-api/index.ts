@@ -440,8 +440,6 @@ async function embedAndFile(id: string, refile: boolean) {
   return await sql`select project, band from hopper.file_note(${id})`;
 }
 
-// Who can unlock a note in the app: Keith's own locks, and safety-check locks on notes he captured
-// himself (in the app, or clipped to Notion before Hopper existed), or asked Claude to save for him.
 // HOP-43: a coarse device name from a user agent. iPads ask for desktop pages and say "Macintosh", so the app
 // also says whether the screen takes touch.
 function deviceFrom(ua: string, touch: boolean): string | null {
@@ -456,6 +454,8 @@ function deviceFrom(ua: string, touch: boolean): string | null {
   return "other";
 }
 
+// Who can unlock a note in the app: Keith's own locks, and safety-check locks on notes he captured
+// himself (in the app, or clipped to Notion before Hopper existed), or asked Claude to save for him.
 const OWN_CAPTURES = ["app", "notion-clip", "assistant"];
 const canUnlock = (n: any) => n.lock_source === "user" || (OWN_CAPTURES.includes(n.source) && ["classifier", "pattern"].includes(n.lock_source));
 
