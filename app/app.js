@@ -52,7 +52,17 @@ async function api(body) {
     body: JSON.stringify(body),
   });
   const j = await r.json().catch(() => ({}));
-  if (r.status === 401) throw new Error("This account isn't Hopper's owner.");
+  if (r.status === 401) {
+    // A 401 is either a dead session (signed out elsewhere, or expired) or a signed-in account that isn't the owner.
+    // Ask Auth which: a dead session goes back to the sign-in screen with a plain reason.
+    const { error } = await sb.auth.getUser();
+    if (error) {
+      signinNote = "You were signed out. Sign in again to carry on.";
+      await sb.auth.signOut({ scope: "local" });
+      throw new Error("signed out");
+    }
+    throw new Error("This account isn't Hopper's owner.");
+  }
   if (!r.ok) throw new Error(j.error || `Error ${r.status}`);
   return j;
 }
@@ -61,13 +71,40 @@ async function api(body) {
 function show(screen) { for (const s of ["signin", "home"]) $(s).hidden = s !== screen; }
 
 let booted = false;
+let signinNote = "";
+// A sign-in link that failed comes back as ?error=...&error_code=... (or in the hash). Say why, then clear the address.
+function linkError() {
+  const p = new URLSearchParams(location.search + "&" + location.hash.replace(/^#/, ""));
+  const code = p.get("error_code") || p.get("error");
+  if (!code) return "";
+  history.replaceState({}, "", location.pathname === "/share" ? "/" : location.pathname);
+  if (code === "otp_expired") return "That sign-in link has expired or was already used. Each new link cancels the ones before it, so use only the newest.";
+  return `That sign-in link didn't work (${p.get("error_description") || code}). Request a new one.`;
+}
+function signinError(error) {
+  if (error.status === 429 || /rate limit/i.test(error.message))
+    return "Too many sign-in emails: Supabase sends at most 2 an hour. Try again in an hour, and use the newest link.";
+  if (/code verifier/i.test(error.message))
+    return "Open the link in the same browser you asked for it from (on Android, copy the link into Chrome).";
+  return error.message;
+}
 const PENDING = "hopper.pendingShare";
 async function boot() {
   if (booted) return;
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
   readShare();
-  const { data: { session } } = await sb.auth.getSession();
+  const bad = linkError();
+  let session = null;
+  try {
+    const r = await sb.auth.getSession();
+    session = r.data.session;
+    if (r.error && !bad) signinNote = signinError(r.error);
+  } catch (e) { signinNote = signinError(e); }
+  if (bad) signinNote = bad;
   if (!session) {
+    // Never leave a blank page: both screens start hidden, so always show one.
+    $("signin-msg").textContent = signinNote;
+    signinNote = "";
     // HOP-9: keep a share through sign-in. The magic link reloads the app, so park the share on this device.
     if (state.share) {
       try { localStorage.setItem(PENDING, JSON.stringify({ ...state.share, at: Date.now() })); } catch {}
@@ -95,15 +132,28 @@ async function boot() {
 
 sb.auth.onAuthStateChange((event) => {
   if (event === "SIGNED_IN") boot();
-  if (event === "SIGNED_OUT") { booted = false; show("signin"); }
+  if (event === "SIGNED_OUT") { booted = false; $("signin-msg").textContent = signinNote; signinNote = ""; show("signin"); }
 });
 
 $("signin-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const email = $("email").value.trim();
-  const back = location.origin + location.pathname + location.search;
+  // Back to the app's root: a parked share waits in localStorage (HOP-9), and an old ?error= must not ride along.
+  const back = location.origin + "/";
   const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: back } });
-  $("signin-msg").textContent = error ? error.message : "Check your email for a sign-in link. Open it on this device.";
+  $("signin-msg").textContent = error ? signinError(error)
+    : "Check your email. Type the code below, or open the link in this browser. Only the newest email works.";
+  if (!error) $("code").focus();
+});
+
+$("code-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = $("email").value.trim(), token = $("code").value.replace(/\D/g, "");
+  if (!email) { $("signin-msg").textContent = "Type your email above first."; return; }
+  const { error } = await sb.auth.verifyOtp({ email, token, type: "email" });
+  // Success fires SIGNED_IN, which boots the app.
+  if (error) $("signin-msg").textContent = /expired|invalid/i.test(error.message)
+    ? "That code has expired or is wrong. Use the code from the newest email." : signinError(error);
 });
 
 // ---------- projects and pills ----------
@@ -1194,7 +1244,7 @@ async function addNoteToSaved() {
 // ---------- menu ----------
 $("menu-btn").addEventListener("click", () => ($("menu").hidden = !$("menu").hidden));
 $("all-projects-btn").addEventListener("click", openProjects);
-$("signout-btn").addEventListener("click", async () => { $("menu").hidden = true; await sb.auth.signOut(); });
+$("signout-btn").addEventListener("click", async () => { $("menu").hidden = true; await sb.auth.signOut({ scope: "local" }); }); // this device only: a global sign-out also ends the phone's session and the claude.ai connector
 for (const b of document.querySelectorAll("[data-close]")) b.addEventListener("click", () => closeOverlay(b.dataset.close));
 function closeOverlay(id) { $(id).hidden = true; }
 

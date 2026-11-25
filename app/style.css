@@ -21,6 +21,8 @@ textarea { resize: vertical; }
 .signin-box img { border-radius: 14px; }
 .signin-box h1 { margin: 10px 0 24px; font-size: 26px; }
 .signin-box form { display: grid; gap: 10px; text-align: left; }
+.signin-box #code-form { margin-top: 18px; }
+.signin-box #code { letter-spacing: .2em; font-variant-numeric: tabular-nums; }
 .consent-box { margin-top: 12vh; }
 .consent-box #c-body { text-align: left; line-height: 1.5; }
 .consent-list { padding-left: 20px; margin: 8px 0 12px; }

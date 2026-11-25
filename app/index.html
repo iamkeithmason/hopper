@@ -42,6 +42,12 @@
       <input id="email" type="email" autocomplete="email" required placeholder="you@example.com">
       <button type="submit" class="primary">Send sign-in link</button>
     </form>
+    <!-- The email also carries a code: typing it works in any browser, unlike the link (PKCE). -->
+    <form id="code-form">
+      <label for="code">Or type the code from the email</label>
+      <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="12" required placeholder="123456">
+      <button type="submit" class="primary">Sign in with code</button>
+    </form>
     <p id="signin-msg" class="muted"></p>
   </div>
 </section>
