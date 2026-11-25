@@ -4,7 +4,9 @@ import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 
 // Hopper MCP server (HOP-18), version 5: reads, plus one append-only save tool. Version 4 added list_benchmarks
 // (portfolio benchmark scores, copied from Notion) and page context on images (role, page, rendered size, position);
-// version 5 lets save_to_hopper add another page of a site to an existing note (add_to).
+// version 5 lets save_to_hopper add another page of a site to an existing note (add_to). Version 6: search_notes filters
+// by project inside the search (HOP-33) and can browse a project with no query; get_note pages long texts (HOP-35);
+// names, tags, moves and kinds match ignoring case and accents, and unknown ones list the valid values (HOP-37).
 // Lets Claude search Hopper and use its design reference library from any MCP client, and save new
 // references for Keith (save_to_hopper). Saving only ever adds: a new note, or a page's screenshots and link on an
 // existing note. No tool here edits, moves or deletes anything.
@@ -106,23 +108,30 @@ const TOOLS = [
   {
     name: "search_notes",
     title: "Search notes",
-    description: "Search everything Keith has saved in Hopper (notes, bookmarks, quotes, images) by meaning and keyword. Returns titles, one-line summaries, format, date, projects and links.",
+    description: "Search everything Keith has saved in Hopper (notes, bookmarks, quotes, images) by meaning and keyword, or, with a project and no query, list that project's newest notes. Returns titles, one-line summaries, format, date, projects and links.",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "What to look for." },
-        project: { type: "string", description: "Only notes in this project (exact name, see list_projects)." },
+        query: { type: "string", description: "What to look for. Leave out with a project to browse that project's newest notes." },
+        project: { type: "string", description: "Only notes in this project (see list_projects; case and accents don't matter)." },
         limit: { type: "integer", description: "How many to return, 1 to 30 (default 10)." },
       },
-      required: ["query"],
     },
     annotations: { readOnlyHint: true },
   },
   {
     name: "get_note",
     title: "Get a note",
-    description: "One note in full: title, text, why it was saved, summary, tags, links with fetched page titles, and design reads of any images.",
-    inputSchema: { type: "object", properties: { id: { type: "string", description: "The note id." } }, required: ["id"] },
+    description: "One note in full: title, text, why it was saved, summary, tags, links with fetched page titles, and design reads of any images. Long texts come in parts of about 12,000 characters: when truncated is true, call again with offset set to next_offset to read on.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The note id." },
+        offset: { type: "integer", description: "Where in the text to start, in characters (default 0). Use next_offset from the previous call." },
+        length: { type: "integer", description: "Most characters of text to return, 1,000 to 30,000 (default 12,000)." },
+      },
+      required: ["id"],
+    },
     annotations: { readOnlyHint: true },
   },
   {
@@ -172,6 +181,21 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const clamp = (v: unknown, lo: number, hi: number, d: number) => Math.max(lo, Math.min(hi, Number.isFinite(Number(v)) ? Math.round(Number(v)) : d));
 const day = (d: unknown) => new Date(d as string).toISOString().slice(0, 10);
 const text = (o: unknown) => ({ type: "text", text: typeof o === "string" ? o : JSON.stringify(o, null, 1) });
+
+// Names as people type them: case, accents, hyphens and extra spaces don't matter ("Lurun" finds "Lurûn",
+// "Fantasy Cartography" finds "fantasy cartography").
+const fold = (s: unknown) => String(s ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/[\s_-]+/g, " ").trim();
+
+// Matches each wanted name to one in the list; anything unknown comes back in missing.
+function resolve(wanted: string[], names: string[]) {
+  const by = new Map(names.map((n) => [fold(n), n]));
+  const found: string[] = [], missing: string[] = [];
+  for (const w of wanted) { const n = by.get(fold(w)); n ? found.push(n) : missing.push(w); }
+  return { found, missing };
+}
+
+const KINDS = ["app-ui", "web-ui", "dashboard", "brand-identity", "logo", "poster", "editorial", "game-layout", "packaging",
+  "typography", "illustration", "photography", "product", "interior", "data-viz", "other"];
 
 // A design read as an assistant needs it: no measurement internals. Aesthetic tags are given once per note,
 // from the shared vocabulary; reads from before the vocabulary carry older free-form tags, so they are left out here.
@@ -229,9 +253,25 @@ const IMAGE_COLS = `a.image_role, a.source_page_url, a.caption, a.caption_on_pag
 
 async function searchReferences(a: any) {
   const q = String(a.query ?? "").trim();
-  const tags: string[] = Array.isArray(a.aesthetics) ? a.aesthetics.map(String) : [];
-  const moves: string[] = Array.isArray(a.moves) ? a.moves.map(String) : [];
-  const kind = a.kind ? String(a.kind) : null;
+  let tags: string[] = Array.isArray(a.aesthetics) ? a.aesthetics.map(String) : [];
+  let moves: string[] = Array.isArray(a.moves) ? a.moves.map(String) : [];
+  let kind = a.kind ? String(a.kind) : null;
+  if (tags.length) {
+    const r = resolve(tags, (await sql`select name from hopper.aesthetics order by name`).map((x: any) => x.name));
+    if (r.missing.length) return [text(`Unknown aesthetic tag${r.missing.length > 1 ? "s" : ""}: ${r.missing.join(", ")}. See list_aesthetics for the vocabulary.`)];
+    tags = r.found;
+  }
+  if (moves.length) {
+    const all = (await sql`select name from hopper.moves order by name`).map((x: any) => x.name);
+    const r = resolve(moves, all);
+    if (r.missing.length) return [text(`Unknown move${r.missing.length > 1 ? "s" : ""}: ${r.missing.join(", ")}. Use one of: ${all.join(", ")}.`)];
+    moves = r.found;
+  }
+  if (kind) {
+    const r = resolve([kind], KINDS);
+    if (r.missing.length) return [text(`Unknown kind: ${kind}. Use one of: ${KINDS.join(", ")}.`)];
+    kind = r.found[0];
+  }
   const limit = clamp(a.limit, 1, 20, 8);
   const vec = q ? await embed(q) : null;
   const rows = await sql`
@@ -281,6 +321,11 @@ async function getReference(a: any) {
                            and (${role}::text is null or a.image_role = ${role}::text)
                          order by ${sql.unsafe(IMAGE_ORDER)}`;
   const links = await linksFor(id);
+  if (!atts.length && !links.some((l: any) => l.page_read)) {
+    return [text(page || role
+      ? "This note has no images matching that page or role. Leave them out to see all its images."
+      : "This note has no images or captured pages, so it isn't a design reference. Use get_note to read it.")];
+  }
   const [bench] = await benchmarkFor(id);
   const out: any[] = [text({
     id: n.id, title: n.title || undefined, why_saved: n.why_saved || undefined, summary: n.summary || undefined,
@@ -315,34 +360,76 @@ async function listAesthetics() {
   return [text(rows)];
 }
 
+// The project a caller named, matched ignoring case and accents; an unknown name lists the real ones.
+async function projectNamed(name: string) {
+  const all = await sql`select id, name from hopper.projects order by name`;
+  const p = all.find((x: any) => fold(x.name) === fold(name));
+  return p ? { project: p } : { error: `No project called ${name}. Projects: ${all.map((x: any) => x.name).join(", ")}.` };
+}
+
 async function searchNotes(a: any) {
   const q = String(a.query ?? "").trim();
-  if (!q) return [text("Give a query.")];
   const limit = clamp(a.limit, 1, 30, 10);
-  const project = a.project ? String(a.project) : null;
-  const vec = await embed(q);
-  const like = `%${q.replace(/[%_\\]/g, "")}%`;
-  const rows = await sql`
-    with sem as (
-      select e.note_id, 1 - (e.embedding <=> ${vec}::extensions.vector) as score
-      from hopper.note_embeddings e order by e.embedding <=> ${vec}::extensions.vector limit 60),
-    kw as (
-      select n.id as note_id, 1.0 as score from hopper.notes_for_ai n
-      where n.title ilike ${like} or n.body ilike ${like} limit 20),
-    hits as (select note_id, max(score) as score from (select * from sem union all select * from kw) u group by note_id)
-    select n.id, n.title, n.summary, n.format, n.created_at, h.score,
-      (select array_agg(p.name) from hopper.note_projects np join hopper.projects p on p.id = np.project_id where np.note_id = n.id) as projects,
-      (select l.url from hopper.note_links l where l.note_id = n.id limit 1) as link
-    from hits h join hopper.notes_for_ai n on n.id = h.note_id
-    where not n.archived
-      and (${project}::text is null or exists (select 1 from hopper.note_projects np join hopper.projects p on p.id = np.project_id
-                                               where np.note_id = n.id and lower(p.name) = lower(${project}::text)))
-    order by h.score desc limit ${limit}`;
-  if (!rows.length) return [text("Nothing matched.")];
+  let pid: string | null = null;
+  if (a.project) {
+    const r = await projectNamed(String(a.project));
+    if (r.error) return [text(r.error)];
+    pid = r.project.id;
+  }
+  if (!q && !pid) return [text("Give a query, or a project to browse.")];
+  let rows;
+  if (!q) {
+    // Browse: the project's newest notes.
+    rows = await sql`
+      select n.id, n.title, n.summary, n.format, n.created_at,
+        (select array_agg(p.name) from hopper.note_projects np join hopper.projects p on p.id = np.project_id where np.note_id = n.id) as projects,
+        (select l.url from hopper.note_links l where l.note_id = n.id limit 1) as link
+      from hopper.note_projects np join hopper.notes_for_ai n on n.id = np.note_id
+      where np.project_id = ${pid} and not n.archived
+      order by n.created_at desc limit ${limit}`;
+  } else {
+    const vec = await embed(q);
+    const like = `%${q.replace(/[%_\\]/g, "")}%`;
+    // With a project, both halves of the search look only inside it, so a small project's notes aren't crowded out
+    // by the top matches from everywhere else. Its semantic half scores the project's notes directly (no vector index).
+    rows = await sql`
+      with sem as (
+        ${pid
+          ? sql`select e.note_id, 1 - (e.embedding <=> ${vec}::extensions.vector) as score
+                from hopper.note_projects np join hopper.note_embeddings e on e.note_id = np.note_id
+                where np.project_id = ${pid} order by score desc limit 60`
+          : sql`select e.note_id, 1 - (e.embedding <=> ${vec}::extensions.vector) as score
+                from hopper.note_embeddings e order by e.embedding <=> ${vec}::extensions.vector limit 60`}),
+      kw as (
+        select n.id as note_id, 1.0 as score from hopper.notes_for_ai n
+        where (n.title ilike ${like} or n.body ilike ${like})
+          and (${pid}::uuid is null or exists (select 1 from hopper.note_projects np where np.note_id = n.id and np.project_id = ${pid}::uuid))
+        limit 20),
+      hits as (select note_id, max(score) as score from (select * from sem union all select * from kw) u group by note_id)
+      select n.id, n.title, n.summary, n.format, n.created_at, h.score,
+        (select array_agg(p.name) from hopper.note_projects np join hopper.projects p on p.id = np.project_id where np.note_id = n.id) as projects,
+        (select l.url from hopper.note_links l where l.note_id = n.id limit 1) as link
+      from hits h join hopper.notes_for_ai n on n.id = h.note_id
+      where not n.archived
+      order by h.score desc limit ${limit}`;
+  }
+  if (!rows.length) return [text(pid ? "Nothing matched in that project." : "Nothing matched.")];
   return [text(rows.map((r: any) => ({
     id: r.id, title: r.title || undefined, summary: r.summary || undefined, format: r.format,
     saved: day(r.created_at), projects: r.projects ?? undefined, link: r.link || undefined,
   })))];
+}
+
+// One part of a long text, cut at a paragraph or line break (else a space) so no word is split.
+function part(body: string, offset: number, length: number) {
+  const from = Math.min(Math.max(0, offset), body.length);
+  let to = Math.min(body.length, from + length);
+  if (to < body.length) {
+    const win = body.slice(from, to), floor = Math.floor(length / 2);
+    const at = [win.lastIndexOf("\n\n"), win.lastIndexOf("\n"), win.lastIndexOf(" ")].find((i) => i >= floor);
+    if (at !== undefined) to = from + at + 1;
+  }
+  return { text: body.slice(from, to), from, to };
 }
 
 async function getNote(a: any) {
@@ -361,9 +448,14 @@ async function getNote(a: any) {
   const atts = await sql`select a.design_read, ${sql.unsafe(IMAGE_COLS)} from hopper.attachments a where a.note_id = ${id}
                          order by ${sql.unsafe(IMAGE_ORDER)}`;
   const group = (k: string) => tags.filter((t: any) => t.kind === k).map((t: any) => t.name);
+  const body = n.body ? String(n.body) : "";
+  const p = body ? part(body, clamp(a.offset, 0, body.length, 0), clamp(a.length, 1000, 30000, 12000)) : null;
+  const cutShort = !!p && (p.from > 0 || p.to < body.length);
   return [text({
     id: n.id, title: n.title || undefined, summary: n.summary || undefined, format: n.format, period: n.period || undefined,
-    why_saved: n.why_saved || undefined, text: n.body ? String(n.body).slice(0, 12000) : undefined,
+    why_saved: n.why_saved || undefined, text: p ? p.text : undefined,
+    text_length: cutShort ? body.length : undefined, text_from: cutShort ? p!.from : undefined,
+    truncated: cutShort ? p!.to < body.length : undefined, next_offset: cutShort && p!.to < body.length ? p!.to : undefined,
     checklist: n.list_items ?? undefined, saved: day(n.created_at),
     projects: group("project"), topics: group("topic"), people: group("person"), works: group("work"),
     aesthetics: n.aesthetics, links, benchmark: bench,
@@ -535,7 +627,7 @@ async function handle(msg: any) {
       return ok({
         protocolVersion: typeof params?.protocolVersion === "string" ? params.protocolVersion : PROTOCOL,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "hopper", title: "Hopper", version: "1.7.0" },
+        serverInfo: { name: "hopper", title: "Hopper", version: "1.8.0" },
         instructions: INSTRUCTIONS,
       });
     case "ping":
