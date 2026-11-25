@@ -26,6 +26,7 @@ import { measure, imageSize } from "./palette.ts";
 //   { ids: [...], write?, redo?, model? }   up to 2 images on up to 10 notes, by note id
 //   { next: n, write?, model?, stale? }     next n images (max 2) with no design read yet, newest first;
 //                                           with stale, also reference reads from an older READ_VERSION
+//   { set: id, model? }                     HOP-31 trial: one read of a note's images as a set (dry run, not saved)
 // Two images a call, one after another: decoding more ran past the edge function's compute limit.
 // write defaults to false (dry run: returns the reads without saving). redo re-reads images already read
 // (and, with pages: true, pages too). images_only skips page reads. Each call reads one waiting page, or else images.
@@ -499,6 +500,59 @@ async function refreshEmbeddings(noteIds: string[], token: string) {
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
 
+// HOP-31 (trial): a set read, one read of all of a note's own images together: what kinds of page or screen the set
+// holds, what stays the same across them and what changes, and how to borrow from the set as a whole. Each image's
+// own design read (summary, kind) goes in as text beside it. Dry run only for now: nothing is saved.
+// Body: { set: <note id>, model? }. Up to SET_MAX images, in the order they were saved.
+const SET_MAX = 8;
+const SET_TOOL = {
+  name: "record_set_read",
+  description: "Record a design read of a set of images saved together on one note.",
+  strict: true,
+  input_schema: obj({
+    summary: str("Two or three sentences on what the set is as a whole and what it shows that no single image does."),
+    is_coherent_set: { type: "boolean", description: "True if the images belong together (one product, document, flow, system); false if they are unrelated pictures saved on one note." },
+    page_types: { type: "array", description: "The kinds of page, screen or spread the set holds. At most 6.", items: obj({
+      type: str("A short name for the kind, e.g. 'rules text spread', 'onboarding step', 'logo lock-up'."),
+      images: { type: "array", items: { type: "integer" }, description: "The numbers of the images of this kind (1-based)." },
+      what_it_does: str("One sentence: the job this kind of page does in the set."),
+    }) },
+    constants: strs("What stays the same across the set: grid, type, colour, components, voice. Concrete, one line each.", 8),
+    variations: strs("What changes between images and why: density, layout, imagery, emphasis. Concrete, one line each.", 8),
+    sequence: str("Whether the order matters (a flow, a reading order, a progression) and what it is; 'none' if unordered."),
+    good_reference_for: strs("What the set as a whole is a good reference for.", 5),
+    how_to_borrow: str("Two or three sentences on how to borrow the system the set shows, not any one image."),
+  }),
+};
+const SET_SYSTEM = `You are a senior designer reading a set of images saved together on one note: spreads from a rulebook, steps of a UI flow, pieces of a brand system, figures from a portfolio. Read the set as a set. Name the kinds of page or screen it holds, what is held constant across them, what varies and why, and whether there is an order. Be concrete (name the grid, the type treatment, the colour roles, the components) and describe only what is in the images. Text beside each image is an earlier read of that image alone; use it, but read the set yourself. Call record_set_read once.`;
+async function readSet(noteId: string, model: string, key: string) {
+  // Through notes_for_ai, so a locked note never reaches the model; only notes the tagger has cleared.
+  const atts = await sql`select a.id, a.storage_path, a.mime, a.image_role, a.design_read->>'summary' as summary, a.design_read->>'kind' as kind
+      from hopper.attachments a join hopper.notes_for_ai n on n.id = a.note_id
+      where a.note_id = ${noteId} and n.tagged_at is not null and a.storage_path is not null and ${sql.unsafe(PER_IMAGE)}
+      order by a.position_from_top_px_at_1440 nulls first, a.id limit ${SET_MAX}`;
+  if ((atts as any[]).length < 2) return { error: "fewer than two images" };
+  const content: any[] = [];
+  let i = 0;
+  for (const a of atts as any[]) {
+    const img: any = await fetchImage(a.storage_path, a.mime);
+    if (img.error) continue;
+    i++;
+    content.push({ type: "text", text: `Image ${i}${a.kind ? ` (${a.kind})` : ""}${a.summary ? `: earlier read, ${a.summary}` : ""}` },
+      { type: "image", source: { type: "base64", media_type: img.mime, data: encodeBase64(img.bytes) } });
+  }
+  if (i < 2) return { error: "fewer than two readable images" };
+  content.push({ type: "text", text: `Call record_set_read for these ${i} images.` });
+  const p: any = { model, max_tokens: 8000, system: SET_SYSTEM, tools: [SET_TOOL], tool_choice: { type: "auto" }, messages: [{ role: "user", content }] };
+  if (model !== "claude-haiku-5-5") { p.output_config = { effort: "medium" }; p.fallbacks = "default"; }
+  const r = await fetch(`${API}/messages`, { method: "POST", headers: headers(key, model), body: JSON.stringify(p) });
+  const j = await r.json();
+  if (!r.ok) return { error: j?.error?.message ?? `api ${r.status}` };
+  const use = (j.content ?? []).find((c: any) => c.type === "tool_use" && c.name === "record_set_read");
+  if (!use) return { error: "no set read", stop: j.stop_reason };
+  return { images: i, read: use.input, usage: j.usage, served_model: j.model };
+}
+
 Deno.serve(async (req: Request) => {
   try {
     const token = req.headers.get("x-hopper-token") ?? "";
@@ -511,6 +565,7 @@ Deno.serve(async (req: Request) => {
     const model = body.model ?? DEFAULT_MODEL;
     if (!MODELS.includes(model)) return new Response("unknown model", { status: 400 });
     const write = body.write === true, redo = body.redo === true, stale = body.stale === true && !body.ids;
+    if (typeof body.set === "string") return json({ model, note_id: body.set, ...(await readSet(body.set, model, key)) });
 
     const ids: string[] | null = Array.isArray(body.ids) ? body.ids : null;
     if (ids && ids.length > 10) return new Response("send up to 10 ids", { status: 400 });

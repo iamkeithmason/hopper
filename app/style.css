@@ -111,6 +111,10 @@ main { padding: 6px 8px 40px; }
 .detail h1 { font-size: 22px; margin: 6px 0 10px; }
 .detail .d-images img { width: 100%; border-radius: 12px; margin-bottom: 8px; }
 .detail a.d-images { display: block; }
+.detail .d-img { margin: 0 0 8px; } .detail .d-img img { margin-bottom: 2px; }
+.img-acts { display: flex; gap: 14px; margin: 0 0 6px; }
+.img-acts .p-act { background: none; border: 0; padding: 6px 0; color: var(--mid); font: inherit; font-size: 13.5px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.img-acts .p-act:disabled { opacity: 0.6; cursor: default; }
 .detail .d-text { white-space: pre-wrap; font-size: 16px; line-height: 1.6; }
 .detail .d-text.quote { font-family: Georgia, "Times New Roman", serif; font-size: 17px; }
 .detail .why { border-left: 3px solid var(--accent); padding: 4px 12px; margin: 12px 0; color: var(--mid); }
@@ -164,11 +168,14 @@ main { padding: 6px 8px 40px; }
 
 .chip { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .chip .x, .chip .ok { display: none; border-radius: 10px; padding: 0 5px; font-size: 12px; }
-.chip.open .x, .chip.open .ok { display: inline-block; }
+.chips.editing .x, .chips.editing .ok { display: inline-block; }
+button.chip { border: 0; font: inherit; color: inherit; }
+.chip.edit { background: none; border: 1.5px solid var(--faint); color: var(--soft); padding: 2px 9px; }
+.chip.edit svg { width: 14px; height: 14px; fill: currentColor; }
 .chip .ok { background: var(--ink); color: var(--bg); }
 .chip .x { background: var(--soft); color: var(--bg); }
 .chip .near { display: none; color: var(--soft); font-size: 11px; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chip.open .near { display: inline; }
+.chips.editing .near { display: inline; }
 .chip.add { background: none; border: 1.5px dashed var(--faint); color: var(--soft); }
 .why-line { color: var(--mid); font-style: italic; margin: 4px 0 8px; }
 /* Design notes on reference images (HOP-20). */
