@@ -471,7 +471,7 @@ async function mediaKinds(ids: string[]) {
          and (a.image_role is null or a.image_role = 'figure')) as images,
       (select l.kind from hopper.note_links l where l.note_id = n.id
          order by case l.kind when 'video' then 0 when 'audio' then 1 when 'pdf' then 2 else 3 end limit 1) as link_kind
-    from unnest(${ids}::uuid[]) as n(id)`;
+    from unnest(${sql.array(ids)}::uuid[]) as n(id)`;
   for (const r of rows) {
     const k = ["video", "audio", "pdf"].includes(r.link_kind) ? { kind: r.link_kind }
       : r.images > 1 ? { kind: "set", count: r.images }
