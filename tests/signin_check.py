@@ -7,6 +7,7 @@ Runs the real app against a fake Supabase client in headless Chrome, like share_
   signed out", not "This account isn't Hopper's owner", and signs out this device only;
 - a live session that isn't the owner still gets the owner message;
 - Sign out signs out this device only (scope "local"), so the phone and the claude.ai connector stay signed in;
+- the 6-digit code from the email signs in (verifyOtp, type "email"), and a wrong or old code says so;
 - getSession throwing still shows the sign-in screen, never a blank page.
 Run:  python3 tests/signin_check.py         (needs: pip install playwright, and Chrome or Chromium)
 """
@@ -28,6 +29,9 @@ const createClient = () => ({ auth: {
                                          : { data: { user: { email: "other@example.com" } }, error: null }),
   onAuthStateChange: (cb) => { window.AUTHCB = cb; if (SB().session) setTimeout(() => cb("SIGNED_IN"), 0); },
   signInWithOtp: async (a) => { AUTH.push({ otp: a }); return SB().rateLimited ? { error: { status: 429, message: "email rate limit exceeded" } } : {}; },
+  verifyOtp: async (a) => { AUTH.push({ verify: a });
+    if (a.token === "123456") { SB().session = true; setTimeout(() => window.AUTHCB && AUTHCB("SIGNED_IN"), 0); return { data: {}, error: null }; }
+    return { data: {}, error: { status: 403, message: "Token has expired or is invalid" } }; },
   signOut: async (o) => { AUTH.push({ signOut: o || null }); setTimeout(() => window.AUTHCB && AUTHCB("SIGNED_OUT"), 0); return {}; },
 } });
 window.fetch = async () => new Response(JSON.stringify({ error: "not signed in as the owner" }), { status: 401 });
@@ -100,6 +104,16 @@ def main():
         pg.evaluate("document.getElementById('signout-btn').click()"); pg.wait_for_timeout(300)
         check(pg.evaluate("JSON.stringify(AUTH.filter((a) => 'signOut' in a).map((a) => a.signOut))") == '[{"scope":"local"}]',
               "Sign out signs out this device only")
+        pg.close()
+
+        pg = page("{}")
+        check(pg.is_visible("#code-form"), "the code box is on the sign-in screen")
+        pg.fill("#email", "keith@example.com"); pg.fill("#code", "999999"); pg.click("#code-form button"); pg.wait_for_timeout(300)
+        check("expired or is wrong" in msg(pg), f"a wrong code says so ({msg(pg)!r})")
+        pg.fill("#code", "123 456"); pg.click("#code-form button"); pg.wait_for_timeout(600)
+        v = pg.evaluate("AUTH.filter((a) => a.verify).pop()")
+        check(v and v["verify"] == {"email": "keith@example.com", "token": "123456", "type": "email"}, f"the code goes to verifyOtp as type email ({v})")
+        check(pg.is_visible("#home"), "a right code opens the app")
         pg.close()
 
         pg = page("{ throwSession: true }")

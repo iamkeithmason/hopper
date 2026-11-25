@@ -142,7 +142,18 @@ $("signin-form").addEventListener("submit", async (e) => {
   const back = location.origin + "/";
   const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: back } });
   $("signin-msg").textContent = error ? signinError(error)
-    : "Check your email for a sign-in link. Open it in this browser, and only the newest link works.";
+    : "Check your email. Type the code below, or open the link in this browser. Only the newest email works.";
+  if (!error) $("code").focus();
+});
+
+$("code-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = $("email").value.trim(), token = $("code").value.replace(/\D/g, "");
+  if (!email) { $("signin-msg").textContent = "Type your email above first."; return; }
+  const { error } = await sb.auth.verifyOtp({ email, token, type: "email" });
+  // Success fires SIGNED_IN, which boots the app.
+  if (error) $("signin-msg").textContent = /expired|invalid/i.test(error.message)
+    ? "That code has expired or is wrong. Use the code from the newest email." : signinError(error);
 });
 
 // ---------- projects and pills ----------
