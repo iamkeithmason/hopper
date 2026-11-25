@@ -7,6 +7,7 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // Every request must carry a Supabase Auth access token for the owner's email (hopper.settings 'owner_email').
 // Locked notes never return their body, summary or tags: only id, title, date and the lock.
 // POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin" | "event", ... }
+// "capture" also takes, from the invoke token only, projects: exact project names to file the note in (hopper-mcp).
 // "capture" also takes image_urls (fetched and kept by Hopper), screenshot (first screen and whole page of the url,
 // from the screenshot function on the Vercel app) and, from the invoke token only, source: "assistant".
 // "screenshot" { id, url?, views? } adds page screenshots to an existing note (its link, or another page as a new link), or retakes them.
@@ -774,6 +775,10 @@ Deno.serve(async (req: Request) => {
         // Only trusted server-side callers (hopper-mcp) may mark a note as saved by Claude; everything else is the app.
         const source = user.email === "service" && b.source === "assistant" ? "assistant" : "app";
         const lock = Boolean(b.lock);
+        // hopper-mcp only (HOP-60): projects named exactly, to file the note there instead of filing by closeness.
+        const projectNames: string[] = user.email === "service" && Array.isArray(b.projects) ? b.projects.map(String).slice(0, 10) : [];
+        const chosen = projectNames.length ? await sql`select id, name from hopper.projects where name = any(${projectNames}::text[])` : [];
+        if (chosen.length < new Set(projectNames).size) return json({ error: "unknown project" }, 400);
         const [n] = await sql`
           insert into hopper.notes (source, title, body, why_saved, is_locked, lock_source, lock_reason, format)
           values (${source}, ${title}, ${text}, ${why}, ${lock}, ${lock ? "user" : null}, ${lock ? "Locked at capture" : null},
@@ -813,7 +818,16 @@ Deno.serve(async (req: Request) => {
         }
         try { await linkify(n.id, source === "assistant"); } catch (_) { /* the note is saved either way */ }
         let filed: any[] = [];
-        try { filed = await embedAndFile(n.id, true); } catch (_) { /* filing is best-effort; the note is saved either way */ }
+        if (chosen.length && !lock) {
+          for (const p of chosen) {
+            await sql`insert into hopper.note_projects (note_id, project_id, confidence, confirmed, added_by)
+                      values (${n.id}, ${p.id}, 'high', true, 'assistant') on conflict do nothing`;
+          }
+          filed = chosen.map((p: any) => ({ project: p.name, band: "chosen" }));
+          try { await embedAndFile(n.id, false); } catch (_) { /* search catches up on the next edit */ }
+        } else {
+          try { filed = await embedAndFile(n.id, true); } catch (_) { /* filing is best-effort; the note is saved either way */ }
+        }
         // Claude tagging runs in the background once filing is done (HOP-5); it does nothing while auto_tag is off.
         try { await sql`select hopper.tag_new(${n.id}::uuid)`; } catch (_) { /* the sweep picks it up */ }
         const [{ c: stored }] = await sql`select count(*)::int as c from hopper.attachments where note_id = ${n.id}`;
