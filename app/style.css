@@ -303,6 +303,9 @@ main { padding: 6px 8px 40px; }
 .from-page .p-link { display: block; margin: 10px 0 2px; font-weight: 600; color: var(--ink); text-decoration: none; }
 .from-page .p-host { color: var(--soft); font-size: 12.5px; }
 .from-page .p-desc { color: var(--mid); font-size: 14.5px; line-height: 1.55; margin: 8px 0 0; }
+.from-page .p-unread { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 10px 0 0; color: var(--soft); font-size: 13.5px; }
+.from-page .p-act { background: none; border: 0; padding: 6px 0; color: var(--mid); font: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.from-page .p-act:disabled { opacity: 0.6; cursor: default; }
 .from-page .v-summary { margin: 14px 0 4px; font-size: 14.5px; line-height: 1.55; overflow-wrap: anywhere; }
 .from-page .v-summary p { margin: 4px 0 0; }
 .from-page .v-summary ul { margin: 8px 0 0; padding-left: 1.2em; }

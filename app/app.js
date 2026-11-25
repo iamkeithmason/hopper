@@ -666,6 +666,39 @@ function videoSummary(l) {
     points.length ? el("ul", {}, points.map((x) => el("li", {}, x))) : null);
 }
 
+// HOP-50: when Hopper couldn't read a page (the site blocked it, even in a real browser) and has nothing from it, a quiet
+// line says so, with Retry and Add screenshot. Feed cards show nothing.
+const UNREAD = ["blocked", "error", "timeout"];
+function unreadPage(n, l, desc) {
+  if (!UNREAD.includes(l.fetch_status) || desc || n.images?.length || n.locked || n.deleted_at) return null;
+  const file = el("input", { type: "file", accept: "image/*", multiple: true, hidden: true });
+  const retry = el("button", { type: "button", class: "p-act" }, "Retry");
+  const add = el("button", { type: "button", class: "p-act" }, "Add screenshot");
+  retry.addEventListener("click", async () => {
+    retry.disabled = add.disabled = true; retry.textContent = "Trying…";
+    try {
+      const r = await api({ action: "refetch", id: n.id });
+      toast(r?.ok ? "Read the page" : "Still couldn't read it");
+      if (r?.ok) return openNote(n.id, false);
+    } catch (err) { toast(err.message); }
+    retry.disabled = add.disabled = false; retry.textContent = "Retry";
+  });
+  add.addEventListener("click", () => file.click());
+  file.addEventListener("change", async () => {
+    const pics = [...file.files].filter((f) => f.type.startsWith("image/")).slice(0, MAX_IMAGES);
+    file.value = "";
+    if (!pics.length) return;
+    retry.disabled = add.disabled = true; add.textContent = "Adding…";
+    try {
+      await api({ action: "add_images", id: n.id, images: await Promise.all(pics.map(shrink)) });
+      toast("Screenshot added");
+      return openNote(n.id, false);
+    } catch (err) { toast(err.message); }
+    retry.disabled = add.disabled = false; add.textContent = "Add screenshot";
+  });
+  return el("div", { class: "p-unread" }, el("span", {}, "Couldn't read this page."), retry, add, file);
+}
+
 function fromPage(n) {
   const l = n.links?.[0];
   if (!l) return null;
@@ -691,6 +724,7 @@ function fromPage(n) {
     el("a", { class: "p-link", href: l.url, title: l.url, target: "_blank", rel: "noopener noreferrer" }, l.page_title || shortUrl(l.url), " ↗"),
     el("span", { class: "p-host" }, host),
     desc ? el("p", { class: "p-desc" }, String(desc).slice(0, 600)) : null,
+    unreadPage(n, l, desc),
     videoSummary(l),
     ...n.links.slice(1).flatMap((x) => [el("a", { class: "p-link", href: x.url, title: x.url, target: "_blank", rel: "noopener noreferrer" }, x.page_title || shortUrl(x.url), " ↗"),
       videoSummary(x)]));

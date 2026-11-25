@@ -257,6 +257,13 @@ export async function capture(url, width, height, wantFull, lite, wantMotion = f
     out.first = await page.screenshot({ type: "jpeg", quality: 82 });
     out.title = await page.title().catch(() => null);
     out.finalUrl = page.url();
+    // HOP-50: what the live page says about itself, for links Hopper's plain fetch was refused.
+    out.meta = await page.evaluate(() => {
+      const m = (k) => document.querySelector(`meta[property="${k}"], meta[name="${k}"]`)?.getAttribute("content")?.trim() || null;
+      const img = m("og:image") || m("twitter:image");
+      let image = null; try { image = img ? new URL(img, location.href).href : null; } catch {}
+      return { image, description: m("og:description") || m("description") || m("twitter:description") };
+    }).catch(() => null);
 
     stage = "figures";
     Object.assign(out, await pageFigures(page).catch((e) => { console.error("figures failed", url, String(e)); return {}; }));
@@ -351,7 +358,7 @@ export default async function handler(req, res) {
     full: r.full ? Buffer.from(r.full).toString("base64") : null,
     phone: phone ? Buffer.from(phone).toString("base64") : null,
     width, height, full_height: r.fullHeight, full_scale: Math.round(r.scale * 100) / 100, clipped: r.clipped,
-    title: r.title, final_url: r.finalUrl, status: r.status, figures: r.figures ?? [], videos: r.videos ?? null,
+    title: r.title, final_url: r.finalUrl, status: r.status, meta: r.meta ?? null, figures: r.figures ?? [], videos: r.videos ?? null,
     motion: r.motion ?? [],
   });
 }
