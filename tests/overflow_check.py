@@ -29,6 +29,7 @@ window.fetch = async (url, o) => {
   if (b.action === "projects") r = { projects: [] };
   else if (b.action === "feed") r = { notes: b.cursor ? [] : [CARD] };
   else if (b.action === "note") r = { note: NOTE, related: [] };
+  else if (b.action === "capture") r = { saved: { id: NOTE.id, title: null }, filed: [] };
   return new Response(JSON.stringify(r), { status: 200 });
 };
 """
@@ -68,12 +69,14 @@ def main():
         exe = chrome()
         b = p.chromium.launch(**({"executable_path": exe} if exe else {}))
         for w, h in ((390, 844), (1440, 900)):
-            # The share sheet, as Android opens it: /share?text=<link>
+            # A share, as Android sends it: /share?text=<link>
             pg = b.new_page(viewport={"width": w, "height": h})
             errors = []; pg.on("pageerror", lambda e: errors.append(str(e)))
             pg.add_init_script(f"history.replaceState(null, '', '/share?text=' + encodeURIComponent({json.dumps(LONG)}))")
             pg.goto(url); pg.wait_for_timeout(900)
-            check(pg.is_visible("#capture"), f"{w}: the share opens the capture sheet")
+            # Shares save on arrival; the sheet opens from the toast's Add note.
+            pg.click("#toast .toast-act"); pg.wait_for_timeout(200)
+            check(pg.is_visible("#capture"), f"{w}: Add note on a saved share opens the capture sheet")
             check(pg.evaluate(wide) <= 0, f"{w}: the page doesn't widen with the capture sheet open ({pg.evaluate(wide)}px)")
             check(pg.evaluate(inner, "#capture .sheet") <= 0, f"{w}: the capture sheet doesn't scroll sideways ({pg.evaluate(inner, '#capture .sheet')}px)")
             sub = pg.text_content("#c-preview .p-sub") or ""
