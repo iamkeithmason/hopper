@@ -16,6 +16,8 @@ Save to Hopper from Chrome or Brave on the desktop. Manifest V3, no build step, 
 - **Right-click**: save the page, an image, a link, selected text as a quote, or a screenshot of the view.
 - **Hover over a large image**: a Save button appears in its corner (switch it off in Options).
 
+On a YouTube video, any of these also reads the video's transcript off the page (it opens the description's "Show transcript" panel for a moment) and sends it with the save. Hopper keeps it and writes a short summary of what the video says, which shows on the note and helps search (HOP-61). Videos without captions save as before.
+
 The badge on the icon shows ✓ when a right-click save lands, or ! with the reason in its tooltip if it didn't.
 
 ## How it works

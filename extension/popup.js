@@ -21,9 +21,9 @@ async function init() {
 
 async function save(screenshot) {
   $("save").disabled = $("shot").disabled = true;
-  $("status").textContent = screenshot ? "Taking the screenshot…" : "Saving…";
+  $("status").textContent = screenshot ? "Taking the screenshot…" : /youtube\.com\/(watch|shorts|live)/.test(tab.url || "") ? "Reading the transcript and saving…" : "Saving…";
   const r = await chrome.runtime.sendMessage({
-    type: "savePage", screenshot, windowId: tab.windowId, url: tab.url, title: tab.title,
+    type: "savePage", screenshot, windowId: tab.windowId, tabId: tab.id, url: tab.url, title: tab.title,
     text: selection, note: $("note").value.trim(), lock: $("lock").checked,
   });
   if (r?.ok) {

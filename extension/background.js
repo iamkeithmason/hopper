@@ -69,6 +69,40 @@ async function flash(tabId, ok, message) {
   }, ok ? 2500 : 8000);
 }
 
+// HOP-61: on a YouTube video, read the transcript off the page itself (the description's "Show transcript" panel), as
+// Keith sees it, so Hopper can summarise what the video says. Runs in the page; best-effort: "" when there is none.
+const VIDEO_PAGE = /^https:\/\/(www\.|m\.)?youtube\.com\/(watch|shorts|live)/;
+
+async function youtubeTranscript(tabId, url) {
+  if (tabId == null || !VIDEO_PAGE.test(url || "")) return "";
+  try {
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId }, world: "MAIN",
+      func: async () => {
+        const wait = (ms) => new Promise((ok) => setTimeout(ok, ms));
+        const SEGMENTS = "ytd-transcript-segment-renderer .segment-text, transcript-segment-view-model .yt-core-attributed-string";
+        const read = () => [...document.querySelectorAll(SEGMENTS)].map((e) => e.textContent.replace(/\s+/g, " ").trim()).filter(Boolean);
+        let lines = read();
+        if (!lines.length) {
+          document.querySelector("#description-inline-expander #expand, tp-yt-paper-button#expand")?.click();
+          await wait(400);
+          const button = document.querySelector("ytd-video-description-transcript-section-renderer button")
+            || [...document.querySelectorAll("button")].find((b) => /transcript/i.test(b.getAttribute("aria-label") || b.textContent || ""));
+          if (!button) return "";
+          button.click();
+          for (let i = 0; i < 20 && !lines.length; i++) { await wait(300); lines = read(); }
+          await wait(500); // long transcripts fill in a beat after the first lines
+          lines = read();
+        }
+        return lines.join("\n").slice(0, 400000);
+      },
+    });
+    return typeof r?.result === "string" ? r.result : "";
+  } catch (_) {
+    return ""; // the page wouldn't run the script: save without a transcript
+  }
+}
+
 // Saves an image by its address. If the site won't hand the image over, saves the image's address as a link.
 async function saveImage({ src, pageUrl, title, note }) {
   try {
@@ -98,8 +132,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const title = tab?.title || undefined;
   const pageUrl = info.pageUrl || tab?.url;
   try {
-    if (info.menuItemId === "page") await call({ action: "capture", title, url: pageUrl });
-    else if (info.menuItemId === "shot") await call({ action: "capture", title, url: pageUrl, images: [await screenshot(tab.windowId)] });
+    if (info.menuItemId === "page") await call({ action: "capture", title, url: pageUrl, transcript: (await youtubeTranscript(tab?.id, pageUrl)) || undefined });
+    else if (info.menuItemId === "shot") {
+      const images = [await screenshot(tab.windowId)];
+      await call({ action: "capture", title, url: pageUrl, images, transcript: (await youtubeTranscript(tab?.id, pageUrl)) || undefined });
+    }
     else if (info.menuItemId === "image") await saveImage({ src: info.srcUrl, pageUrl, title });
     else if (info.menuItemId === "selection") await call({ action: "capture", title, url: pageUrl, text: info.selectionText });
     else if (info.menuItemId === "link") await call({ action: "capture", url: info.linkUrl, note: `Found on ${title || pageUrl}` });
@@ -115,7 +152,9 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     if (msg.type === "ping") return call({ action: "ping" });
     if (msg.type === "savePage") {
       const images = msg.screenshot ? [await screenshot(msg.windowId)] : undefined;
-      return call({ action: "capture", title: msg.title, url: msg.url, text: msg.text || undefined, note: msg.note || undefined, lock: !!msg.lock, images });
+      const transcript = await youtubeTranscript(msg.tabId, msg.url);
+      return call({ action: "capture", title: msg.title, url: msg.url, text: msg.text || undefined, note: msg.note || undefined, lock: !!msg.lock, images,
+        transcript: transcript || undefined });
     }
     if (msg.type === "saveImage") {
       const r = await saveImage({ src: msg.src, pageUrl: msg.pageUrl, title: msg.title });
