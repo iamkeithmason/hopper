@@ -29,7 +29,17 @@ function el(tag, attrs = {}, ...kids) {
 function icon(name) { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); const u = document.createElementNS("http://www.w3.org/2000/svg", "use"); u.setAttribute("href", `#i-${name}`); s.append(u); return s; }
 const fmtDate = (d) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 const fmtTime = (d) => new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2600); }
+// A toast can carry one action button (the "Add note" after a share); it then stays up longer, and a tap on the
+// action hides it. ms 0 keeps it up until the next toast.
+function toast(msg, action = null, ms = action ? 7000 : 2600) {
+  const t = $("toast");
+  t.replaceChildren(...[
+    el("span", {}, msg),
+    action ? el("button", { type: "button", class: "toast-act", onclick: () => { t.hidden = true; action.onclick(); } }, action.label) : null,
+  ].filter(Boolean));
+  t.hidden = false; clearTimeout(toast.t);
+  if (ms) toast.t = setTimeout(() => (t.hidden = true), ms);
+}
 function autosize(t) { t.style.height = "auto"; t.style.height = `${t.scrollHeight}px`; }
 const colourClass = (c) => (c ? `c-${c}` : "");
 
@@ -79,7 +89,7 @@ async function boot() {
     await loadProjects();
     track("open");
     route();
-    if (state.share) { state.share.blobs = await sharedImages(state.share.images); openCapture(state.share); }
+    if (state.share) { state.share.blobs = await sharedImages(state.share.images); saveShare(state.share); }
   } catch (e) { $("status").textContent = e.message; }
 }
 
@@ -925,16 +935,47 @@ async function shrink(blob) {
   return { data: btoa(bin), mime: "image/jpeg", width: w, height: h };
 }
 
+// A share saves the moment it arrives: no sheet stands between the share button and Hopper. The toast that
+// confirms it offers "Add note", which opens the sheet on the saved note to add a why-saved line (or lock it).
+// If the save fails, the sheet opens with the share on it, so nothing is lost and Save tries again.
+async function saveShare(s) {
+  if (!(s.url || s.text || s.title || s.blobs?.length)) return;
+  toast("Saving to Hopper…", null, 0);
+  const payload = { action: "capture", title: s.title || "", url: s.url || "", text: s.text || "", note: "", lock: false,
+    route: "share", touch: navigator.maxTouchPoints > 1 };
+  try {
+    if (s.blobs?.length) payload.images = await Promise.all(s.blobs.slice(0, MAX_IMAGES).map(shrink));
+    const r = await api(payload);
+    clearSharedImages();
+    toast(savedMessage(r), { label: "Add note", onclick: () => openCapture(s, r.saved) });
+    if (!state.q && !state.archived) resetFeed();
+  } catch (err) {
+    openCapture(s);
+    toast(`Not saved yet: ${err.message}`);
+  }
+}
+function savedMessage(r) {
+  const filed = (r && r.filed) || [];
+  const firm = filed.filter((f) => f.band === "In").map((f) => f.project);
+  const maybe = filed.filter((f) => f.band === "Nearby").map((f) => f.project);
+  return firm.length ? `Saved, filed in ${firm.join(" and ")}` : maybe.length ? `Saved, maybe ${maybe[0]}` : "Saved to Hopper";
+}
+
 // Images on the capture sheet: the shared ones plus any Keith adds with the Image button, paste or drag
 // and drop (desktop screenshots: Win+Shift+S, then Ctrl+V). The server takes up to four per note.
 const MAX_IMAGES = 4;
-function openCapture(s = null) {
+// saved: the note a share has already been saved as. The sheet then edits that note (title, why-saved line, lock)
+// instead of making a new one, and adding images is left to the open note.
+function openCapture(s = null, saved = null) {
   state.share = s;
+  state.saved = saved;
   state.capShared = !!(s && (s.url || s.text || s.blobs?.length));
   state.capImages = [...(s?.blobs || [])];
-  $("c-title").value = s?.title || "";
+  $("c-title").value = saved?.title || s?.title || "";
   $("c-note").value = "";
   $("c-note").placeholder = state.capShared ? "Add a note, or why you saved it" : "Note";
+  $("c-file").closest("label").hidden = !!saved;
+  $("capture-save").textContent = saved ? "Save note" : "Save";
   $("c-lock").checked = false;
   renderCapturePreview();
   $("capture").hidden = false;
@@ -946,7 +987,7 @@ function renderCapturePreview() {
   state.capUrls = state.capImages.map((b) => URL.createObjectURL(b));
   const thumbs = state.capImages.map((b, i) => el("span", { class: "p-thumb" },
     el("img", { src: state.capUrls[i], alt: "" }),
-    el("button", { type: "button", class: "p-drop", "aria-label": "Remove image", onclick: () => { state.capImages.splice(i, 1); renderCapturePreview(); } }, "✕")));
+    state.saved ? null : el("button", { type: "button", class: "p-drop", "aria-label": "Remove image", onclick: () => { state.capImages.splice(i, 1); renderCapturePreview(); } }, "✕")));
   let host = ""; try { host = new URL(s?.url).hostname.replace(/^www\./, ""); } catch {}
   const hasText = !!(s && (s.url || s.text || (state.capShared && s.title)));
   pv.replaceChildren(...[
@@ -967,7 +1008,7 @@ function addCaptureImages(files) {
 function closeCapture() {
   if (state.share?.blobs?.length) clearSharedImages();
   for (const u of state.capUrls || []) URL.revokeObjectURL(u);
-  $("capture").hidden = true; state.share = null; state.capImages = []; state.capUrls = [];
+  $("capture").hidden = true; state.share = null; state.saved = null; state.capImages = []; state.capUrls = [];
 }
 for (const id of ["c-title", "c-note"]) $(id).addEventListener("input", () => autosize($(id)));
 $("c-title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("c-note").focus(); } });
@@ -984,6 +1025,7 @@ $("capture-cancel").addEventListener("click", closeCapture);
 $("capture").addEventListener("click", (e) => { if (e.target.id === "capture") closeCapture(); });
 $("capture-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (state.saved) { addNoteToSaved(); return; }
   const s = state.share;
   const shared = state.capShared, pics = state.capImages || [];
   const typed = $("c-note").value;
@@ -999,15 +1041,31 @@ $("capture-form").addEventListener("submit", async (e) => {
   }
   try {
     const r = await api(payload); closeCapture();
-    const filed = (r && r.filed) || [];
-    const firm = filed.filter((f) => f.band === "In").map((f) => f.project);
-    const maybe = filed.filter((f) => f.band === "Nearby").map((f) => f.project);
-    toast(firm.length ? `Saved, filed in ${firm.join(" and ")}` : maybe.length ? `Saved, maybe ${maybe[0]}` : "Saved to Hopper");
+    toast(savedMessage(r));
     if (!state.q && !state.archived) resetFeed();
   }
   catch (err) { toast(err.message); }
   $("capture-save").disabled = false;
 });
+
+// The note added after a share: the why-saved line and any title change go on the saved note, then the lock.
+async function addNoteToSaved() {
+  const saved = state.saved;
+  const why = $("c-note").value.trim(), title = $("c-title").value.trim(), lock = $("c-lock").checked;
+  const fields = {};
+  if (why) fields.why_saved = why;
+  if (title !== (saved.title || "").trim()) fields.title = title;
+  if (!Object.keys(fields).length && !lock) { closeCapture(); return; }
+  $("capture-save").disabled = true;
+  try {
+    if (Object.keys(fields).length) await api({ action: "update", id: saved.id, ...fields });
+    if (lock) await api({ action: "lock", id: saved.id, lock: true });
+    closeCapture();
+    toast(lock ? (why ? "Note added and locked" : "Locked") : why ? "Note added" : "Saved");
+    if (!state.q && !state.archived) resetFeed();
+  } catch (err) { toast(err.message); }
+  $("capture-save").disabled = false;
+}
 
 // ---------- menu ----------
 $("menu-btn").addEventListener("click", () => ($("menu").hidden = !$("menu").hidden));

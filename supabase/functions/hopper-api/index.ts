@@ -657,7 +657,8 @@ Deno.serve(async (req: Request) => {
         });
       }
       case "update": {
-        // Title, body, format, colour, pin and archive. Locked and binned notes can't be edited here.
+        // Title, body, why-saved line, format, colour, pin and archive. Locked and binned notes can't be edited here.
+        // why_saved is how a share gets its note after it has been saved (shares save on arrival; the note is optional).
         const [n] = await sql`select id, is_locked, format, source, deleted_at from hopper.notes where id = ${b.id}`;
         if (!n) return json({ error: "not found" }, 404);
         if (n.deleted_at) return IN_BIN();
@@ -671,14 +672,15 @@ Deno.serve(async (req: Request) => {
           update hopper.notes set
             title = case when ${has("title")}::boolean then nullif(trim(${b.title ?? ""}::text), '') else title end,
             body = case when ${has("body")}::boolean then nullif(${b.body ?? ""}::text, '') else body end,
+            why_saved = case when ${has("why_saved")}::boolean then nullif(trim(${b.why_saved ?? ""}::text), '') else why_saved end,
             format = case when ${has("format")}::boolean then ${b.format ?? null}::text else format end,
             keep_color = case when ${has("color")}::boolean then ${b.color ?? null}::text else keep_color end,
             pinned = case when ${has("pinned")}::boolean then ${Boolean(b.pinned)}::boolean else pinned end,
             archived = case when ${has("archived")}::boolean then ${Boolean(b.archived)}::boolean else archived end,
             edited_at = now()
           where id = ${b.id}
-          returning id, edited_at, format, keep_color, pinned, archived`;
-        if ((has("title") || has("body")) && OWN_CAPTURES.includes(n.source)) {
+          returning id, edited_at, format, keep_color, pinned, archived, why_saved`;
+        if ((has("title") || has("body") || has("why_saved")) && OWN_CAPTURES.includes(n.source)) {
           // Marked for a fresh Claude tagging pass; the sweep runs it once the note has been still for two minutes.
           await sql`update hopper.notes set tagged_at = null where id = ${n.id} and not is_locked`;
           const [{ c }] = await sql`select count(*)::int as c from hopper.note_projects where note_id = ${n.id}`;
