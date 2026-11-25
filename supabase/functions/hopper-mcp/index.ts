@@ -8,7 +8,8 @@ import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 // by project inside the search (HOP-33) and can browse a project with no query; get_note pages long texts (HOP-35);
 // names, tags, moves and kinds match ignoring case and accents, and unknown ones list the valid values (HOP-37).
 // Version 7 (HOP-60): save_to_hopper can file the new note in named projects, and set_note_projects moves a note
-// between projects. Filing is the one thing on an existing note a tool here can change.
+// between projects. Filing is the one thing on an existing note a tool here can change. Version 8 (HOP-34): search_notes
+// weights keyword hits by field (title, works and people, summary, body), matches whole words and returns score.
 // Lets Claude search Hopper and use its design reference library from any MCP client, and save new
 // references for Keith (save_to_hopper). Saving only ever adds: a new note, or a page's screenshots and link on an
 // existing note. Beyond that, set_note_projects changes which projects a note is filed in; no tool edits a note's
@@ -386,6 +387,16 @@ async function projectNamed(name: string) {
   return p ? { project: p } : { error: `No project called ${name}. Projects: ${all.map((x: any) => x.name).join(", ")}.` };
 }
 
+// Search weights (HOP-34): a keyword hit adds this to the note's semantic score, by the best field it lands in.
+const KW = { title: 0.2, tag: 0.15, summary: 0.1, body: 0.05 };
+// Semantic-only hits scoring below this are left out. gte-small scores unrelated notes around 0.75 to 0.8.
+const SEM_FLOOR = 0;
+// A case-insensitive whole-word pattern for the query (Postgres \m and \M mark word starts and ends).
+function wordPattern(q: string) {
+  const body = q.replace(/[\\^$.|?*+()[\]{}]/g, "\\$&").replace(/\s+/g, "\\s+");
+  return `${/^\w/.test(q) ? "\\m" : ""}${body}${/\w$/.test(q) ? "\\M" : ""}`;
+}
+
 async function searchNotes(a: any) {
   const q = String(a.query ?? "").trim();
   const limit = clamp(a.limit, 1, 30, 10);
@@ -408,34 +419,46 @@ async function searchNotes(a: any) {
       order by n.created_at desc limit ${limit}`;
   } else {
     const vec = await embed(q);
-    const like = `%${q.replace(/[%_\\]/g, "")}%`;
-    // With a project, both halves of the search look only inside it, so a small project's notes aren't crowded out
-    // by the top matches from everywhere else. Its semantic half scores the project's notes directly (no vector index).
+    // HOP-34. Keyword hits are matched as whole words and weighted by where they land (title, then a tagged work or
+    // person, then the AI summary, then the body), added to the semantic score. Semantic-only hits below SEM_FLOOR
+    // are dropped, so weak matches no longer pad the results to the limit.
+    const word = wordPattern(q);
     rows = await sql`
       with sem as (
         ${pid
-          ? sql`select e.note_id, 1 - (e.embedding <=> ${vec}::extensions.vector) as score
-                from hopper.note_projects np join hopper.note_embeddings e on e.note_id = np.note_id
-                where np.project_id = ${pid} order by score desc limit 60`
-          : sql`select e.note_id, 1 - (e.embedding <=> ${vec}::extensions.vector) as score
-                from hopper.note_embeddings e order by e.embedding <=> ${vec}::extensions.vector limit 60`}),
+          ? sql`select e.note_id from hopper.note_projects np join hopper.note_embeddings e on e.note_id = np.note_id
+                where np.project_id = ${pid} order by e.embedding <=> ${vec}::extensions.vector limit 60`
+          : sql`select e.note_id from hopper.note_embeddings e order by e.embedding <=> ${vec}::extensions.vector limit 60`}),
       kw as (
-        select n.id as note_id, 1.0 as score from hopper.notes_for_ai n
-        where (n.title ilike ${like} or n.body ilike ${like})
+        select n.id as note_id,
+          case when n.title ~* ${word} then ${KW.title}::float8
+               when exists (select 1 from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = n.id and w.title ~* ${word})
+                 or exists (select 1 from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = n.id and p.name ~* ${word})
+                 then ${KW.tag}::float8
+               when n.summary ~* ${word} then ${KW.summary}::float8
+               else ${KW.body}::float8 end as bonus
+        from hopper.notes_for_ai n
+        where (n.title ~* ${word} or n.summary ~* ${word} or n.body ~* ${word}
+               or exists (select 1 from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = n.id and w.title ~* ${word})
+               or exists (select 1 from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = n.id and p.name ~* ${word}))
           and (${pid}::uuid is null or exists (select 1 from hopper.note_projects np where np.note_id = n.id and np.project_id = ${pid}::uuid))
-        limit 20),
-      hits as (select note_id, max(score) as score from (select * from sem union all select * from kw) u group by note_id)
-      select n.id, n.title, n.summary, n.format, n.created_at, h.score,
+        order by bonus desc limit 40),
+      cand as (select note_id from sem union select note_id from kw),
+      hits as (
+        select c.note_id, coalesce(1 - (e.embedding <=> ${vec}::extensions.vector), 0) as sem, coalesce(k.bonus, 0) as bonus
+        from cand c left join hopper.note_embeddings e on e.note_id = c.note_id left join kw k on k.note_id = c.note_id)
+      select n.id, n.title, n.summary, n.format, n.created_at, h.sem + h.bonus as score,
         (select array_agg(p.name) from hopper.note_projects np join hopper.projects p on p.id = np.project_id where np.note_id = n.id) as projects,
         (select l.url from hopper.note_links l where l.note_id = n.id limit 1) as link
       from hits h join hopper.notes_for_ai n on n.id = h.note_id
-      where not n.archived
-      order by h.score desc limit ${limit}`;
+      where not n.archived and (h.bonus > 0 or h.sem >= ${SEM_FLOOR})
+      order by h.sem + h.bonus desc limit ${limit}`;
   }
   if (!rows.length) return [text(pid ? "Nothing matched in that project." : "Nothing matched.")];
   return [text(rows.map((r: any) => ({
     id: r.id, title: r.title || undefined, summary: r.summary || undefined, format: r.format,
     saved: day(r.created_at), projects: r.projects ?? undefined, link: r.link || undefined,
+    score: r.score == null ? undefined : Math.round(r.score * 1000) / 1000,
   })))];
 }
 
@@ -702,7 +725,7 @@ async function handle(msg: any) {
       return ok({
         protocolVersion: typeof params?.protocolVersion === "string" ? params.protocolVersion : PROTOCOL,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "hopper", title: "Hopper", version: "1.9.0" },
+        serverInfo: { name: "hopper", title: "Hopper", version: "1.10.0" },
         instructions: INSTRUCTIONS,
       });
     case "ping":
