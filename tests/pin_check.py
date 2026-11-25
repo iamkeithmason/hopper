@@ -78,11 +78,14 @@ def main():
         check(pg.evaluate(opened) == "Alpha", "a plain click still opens the project")
         check(not errors, f"no script errors ({errors[:2]})")
 
-        # Phone: a touch long-press pins, and the tap that ends it doesn't open the project.
+        # Phone: the pills live in the navigation sheet (HOP-39). A touch long-press on a project there pins it, and the
+        # tap that ends it doesn't open the project.
         ph = b.new_page(viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
         perrors = []; ph.on("pageerror", lambda e: perrors.append(str(e)))
         ph.goto(url); ph.wait_for_timeout(800)
-        sel = "#pills button:has-text('Coracle')"
+        check(ph.is_hidden("#pills") and ph.is_visible("#lb-open"), "phone: the bottom bar replaces the top pills")
+        ph.tap("#lb-open"); ph.wait_for_timeout(200)
+        sel = "#ns-list .ns-row:has-text('Coracle')"
         ph.eval_on_selector(sel, """(b) => { const r = b.getBoundingClientRect(), o = { pointerType: 'touch', bubbles: true, clientX: r.x + 5, clientY: r.y + 5 };
           b.dispatchEvent(new PointerEvent('pointerdown', o)); window.__b = b; window.__o = o; }""")
         ph.wait_for_timeout(750)
@@ -90,14 +93,16 @@ def main():
         ph.evaluate("() => { __b.dispatchEvent(new PointerEvent('pointerup', __o)); document.elementFromPoint(__o.clientX, __o.clientY).click(); }")
         ph.wait_for_timeout(400)
         check(ph.evaluate(order)[1] == "Coracle" and "Coracle" in ph.evaluate(pinned), f"phone: a long-press pins Coracle, the last pill ({ph.evaluate(order)})")
-        check(ph.evaluate(opened) == "All", "phone: the tap that ends the long-press doesn't open whichever pill is now under it")
-        ph.eval_on_selector("#pills button:has-text('Alpha')", """(b) => { const r = b.getBoundingClientRect(), o = { pointerType: 'touch', bubbles: true, clientX: r.x + 5, clientY: r.y + 5 };
+        check(ph.evaluate(opened) == "All", "phone: the tap that ends the long-press doesn't open whichever project is now under it")
+        check(ph.is_visible("#nav-sheet"), "phone: the sheet stays open after pinning")
+        ph.eval_on_selector("#ns-list .ns-row:has-text('Alpha')", """(b) => { const r = b.getBoundingClientRect(), o = { pointerType: 'touch', bubbles: true, clientX: r.x + 5, clientY: r.y + 5 };
           b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new PointerEvent('pointermove', { ...o, clientX: o.clientX + 40 })); }""")
         ph.wait_for_timeout(750)
-        check(ph.evaluate(pinned) == ["Coracle"], "phone: swiping the pill row doesn't pin")
+        check(ph.evaluate(pinned) == ["Coracle"], "phone: scrolling the project list doesn't pin")
         ph.wait_for_timeout(1300)
-        ph.tap("#pills button:has-text('Beta')"); ph.wait_for_timeout(300)
-        check(ph.evaluate(opened) == "Beta", "phone: a quick tap still opens the project")
+        ph.tap("#ns-list .ns-row:has-text('Beta')"); ph.wait_for_timeout(300)
+        check(ph.evaluate(opened) == "Beta" and ph.is_hidden("#nav-sheet"), "phone: a quick tap opens the project and closes the sheet")
+        check(ph.text_content("#lb-where") == "Beta", "phone: the bar says where you are")
         check(not perrors, f"phone: no script errors ({perrors[:2]})")
         b.close()
     srv.shutdown()

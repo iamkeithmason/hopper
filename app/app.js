@@ -12,7 +12,7 @@ const sb = createClient(SUPABASE_URL, PUBLISHABLE_KEY, {
 });
 
 const $ = (id) => document.getElementById(id);
-const state = { projects: [], project: null, topic: null, q: "", archived: false, bin: false, binOffset: 0, oldest: null, loading: false, done: false, share: null, note: null, tagOptions: null };
+const state = { projects: [], project: null, topic: null, topics: [], q: "", archived: false, bin: false, binOffset: 0, oldest: null, loading: false, done: false, share: null, note: null, tagOptions: null };
 
 // ---------- helpers ----------
 function el(tag, attrs = {}, ...kids) {
@@ -183,6 +183,7 @@ function renderPills() {
     return b;
   };
   nav.append(pill("All", null), ...state.projects.map(projectPill), el("button", { onclick: openProjects }, "All projects →"));
+  renderBar();
 }
 
 // The pills re-render (in a new order) once a pin is saved, so the tap that ends a long-press can land on a different
@@ -214,6 +215,7 @@ async function togglePin(p) {
     await api({ action: "pin_project", project_id: p.id, pinned });
     toast(pinned ? `Pinned ${p.name}` : `Unpinned ${p.name}`);
     await loadProjects();
+    if (!$("nav-sheet").hidden) renderNav();
   } catch (e) { toast(e.message); }
 }
 
@@ -221,9 +223,12 @@ async function pickProject(id) {
   state.project = id; state.topic = null; state.q = ""; $("q").value = "";
   renderPills();
   const sub = $("subpills");
+  state.topics = [];
   if (!id) { sub.hidden = true; } else {
     sub.hidden = false; sub.replaceChildren();
     const { topics } = await api({ action: "topics", project_id: id });
+    if (state.project !== id) return; // picked another project while this one's topics loaded
+    state.topics = topics;
     const tp = (label, name) => el("button", { class: state.topic === name ? "on" : "", onclick: () => { track("topic", { project_id: state.project, topic: name }); state.topic = name; pickTopic(); } }, label);
     sub.append(tp("All topics", null), ...topics.map((t) => tp(t.name, t.name)));
   }
@@ -370,6 +375,7 @@ async function loadPinned() {
 }
 
 function resetFeed() {
+  renderBar();
   state.oldest = null; state.binOffset = 0; state.done = false; layout($("feed")); $("status").textContent = "";
   window.scrollTo({ top: 0 });
   loadPinned();
@@ -426,6 +432,7 @@ let lastY = 0;
 addEventListener("scroll", () => {
   const y = scrollY;
   $("top").classList.toggle("hide", y > lastY && y > 120);
+  $("lbar").classList.toggle("hide", y > lastY && y > 120);
   lastY = y;
 }, { passive: true });
 
@@ -472,7 +479,7 @@ function setEditorChrome(n) {
   sheet.className = `sheet tall detail ${colourClass(n?.color)}`;
   // Binned notes are read-only until restored: the Bin banner holds their only actions.
   const locked = !n || n.locked || !!n.deleted_at;
-  for (const id of ["d-pin", "d-archive", "d-colour-btn", "d-format", "d-more"]) $(id).hidden = locked;
+  for (const id of ["d-pin", "d-archive", "d-colour-btn", "d-format", "d-more", "d-more2"]) $(id).hidden = locked;
   $("d-lock").hidden = !n || !!n.deleted_at || (n.locked && !(n.can_unlock ?? n.user_locked));
   if (!n) return;
   $("d-pin").replaceChildren(icon(n.pinned ? "pinned" : "pin"));
@@ -1048,6 +1055,9 @@ function setColour(c) {
   queueSave({ color: c });
 }
 $("d-more").addEventListener("click", () => { $("d-colours").hidden = true; $("d-menu").hidden = !$("d-menu").hidden; });
+// Phone: back and ⋯ live in the bottom bar (the top bar is hidden), within reach of a left thumb.
+$("d-more2").addEventListener("click", () => $("d-more").click());
+$("d-back").addEventListener("click", () => $("detail-close").click());
 $("d-open-link").addEventListener("click", () => { const u = state.note?.links?.[0]?.url; if (u) window.open(u, "_blank", "noopener"); $("d-menu").hidden = true; });
 $("d-copy-link").addEventListener("click", async () => {
   $("d-menu").hidden = true;
@@ -1264,7 +1274,79 @@ async function addNoteToSaved() {
 // ---------- menu ----------
 $("menu-btn").addEventListener("click", () => ($("menu").hidden = !$("menu").hidden));
 $("all-projects-btn").addEventListener("click", openProjects);
-$("signout-btn").addEventListener("click", async () => { $("menu").hidden = true; await sb.auth.signOut({ scope: "local" }); }); // this device only: a global sign-out also ends the phone's session and the claude.ai connector
+$("signout-btn").addEventListener("click", signOut);
+async function signOut() { $("menu").hidden = true; await sb.auth.signOut({ scope: "local" }); } // this device only: a global sign-out also ends the phone's session and the claude.ai connector
+
+// ---------- phone: one bar and the navigation sheet (HOP-39, designed for Keith's left thumb) ----------
+// Below 700px the top header gives way to a bar at the bottom: New on the left, then one wide button that says where
+// you are. It opens a sheet that grows upward from its search field: topics of the current project nearest the thumb,
+// then all notes and every project (most recent lowest), then Archived, Bin and Sign out furthest away.
+function renderBar() {
+  const p = state.projects.find((x) => x.id === state.project);
+  // Inside a project its topics float above the bar, so they're visible and one tap away.
+  const row = $("lb-topics");
+  row.hidden = !(p && state.topics.length && !state.archived && !state.bin && !state.q);
+  if (!row.hidden) {
+    const chip = (label, name) => el("button", { type: "button", class: state.topic === name ? "on" : "",
+      onclick: () => { track("topic", { project_id: state.project, topic: name }); state.topic = name; pickTopic(); } }, label);
+    row.replaceChildren(chip("All topics", null), ...state.topics.map((t) => chip(t.name, t.name)));
+  }
+  $("lb-where").textContent = state.bin ? "Bin" : state.archived ? "Archived" : p ? p.name + (state.topic ? ` · ${state.topic}` : "") : "All notes";
+  $("lb-hint").textContent = state.q ? `· “${state.q}”` : "· Search, projects…";
+}
+function openNav() { track("sheet"); $("ns-q").value = ""; renderNav(); $("nav-sheet").hidden = false; }
+function closeNav() { $("nav-sheet").hidden = true; $("ns-q").blur(); }
+function renderNav() {
+  const f = $("ns-q").value.trim(), fl = f.toLowerCase();
+  const match = (s) => !fl || s.toLowerCase().includes(fl);
+  const normal = !state.archived && !state.bin;
+  const row = (label, ic, on, onclick, count) => el("button", { type: "button", class: on ? "ns-row on" : "ns-row", onclick },
+    icon(ic), el("span", { class: "ns-name" }, label), count != null ? el("span", { class: "ns-cnt" }, count.toLocaleString("en-GB")) : null);
+  const group = (label) => el("p", { class: "ns-grp" }, label);
+  const leaveSearch = () => { state.q = ""; $("q").value = ""; };
+  const kids = [];
+  const views = [
+    ["Sign out", "out", () => { closeNav(); signOut(); }, false],
+    ["Bin", "bin", () => { closeNav(); openView("bin"); }, state.bin],
+    ["Archived", "archive", () => { closeNav(); openView("archived"); }, state.archived],
+  ].filter(([l]) => match(l));
+  if (views.length) kids.push(group("Views"), ...views.map(([l, i, fn, on]) => row(l, i, on, fn)));
+  const projectRow = (p) => {
+    const b = row(p.name, p.pinned ? "pinned" : "folder", normal && state.project === p.id, () => {
+      if (b.held || justPinned()) { b.held = false; return; } // a long-press pinned it (HOP-13)
+      track("sheet_pick", { project_id: p.id }); closeNav(); setView(null); pickProject(p.id);
+    }, p.notes);
+    holdToPin(b, p);
+    return b;
+  };
+  const projs = state.projects.filter((p) => match(p.name)).slice().reverse();
+  const all = match("All notes") ? row("All notes", "folder", normal && !state.project && !state.q, () => { closeNav(); setView(null); pickProject(null); }) : null;
+  if (projs.length || all) kids.push(group("Projects · hold one to pin it"), ...projs.map(projectRow), all);
+  if (!fl && normal && state.project && state.topics.length) {
+    const chip = (label, name) => el("button", { type: "button", class: state.topic === name ? "on" : "",
+      onclick: () => { track("topic", { project_id: state.project, topic: name }); closeNav(); leaveSearch(); state.topic = name; pickTopic(); } }, label);
+    const p = state.projects.find((x) => x.id === state.project);
+    kids.push(group(`Topics in ${p?.name ?? "this project"}`), el("div", { class: "ns-chips" }, chip("All topics", null), ...state.topics.map((t) => chip(t.name, t.name))));
+  }
+  if (!fl && state.q) kids.push(row(`Clear search “${state.q}”`, "close", false, () => { closeNav(); leaveSearch(); resetFeed(); }));
+  if (f) kids.push(el("button", { type: "submit", form: "ns-form", class: "ns-row go" }, icon("search"), el("span", { class: "ns-name" }, `Search notes for “${f}”`)));
+  const list = $("ns-list");
+  list.replaceChildren(...kids.filter(Boolean));
+  list.scrollTop = list.scrollHeight;
+}
+$("lb-new").addEventListener("click", () => openCapture());
+$("lb-open").addEventListener("click", openNav);
+$("ns-q").addEventListener("input", renderNav);
+$("ns-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const v = $("ns-q").value.trim();
+  if (!v) return;
+  // Search covers every note, so the project filter goes, and the bar says so.
+  closeNav(); setView(null);
+  state.project = null; state.topic = null; state.topics = []; renderPills(); $("subpills").hidden = true;
+  clearTimeout(searchTimer); $("q").value = v; state.q = v; resetFeed();
+});
+$("nav-sheet").addEventListener("click", (e) => { if (e.target.id === "nav-sheet") closeNav(); });
 for (const b of document.querySelectorAll("[data-close]")) b.addEventListener("click", () => closeOverlay(b.dataset.close));
 function closeOverlay(id) { $(id).hidden = true; }
 

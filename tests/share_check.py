@@ -105,7 +105,7 @@ def main():
             check(len(calls(pg, "capture")) == 1, f"{w}: adding the note makes no second note")
             check(pg.is_hidden("#capture") and "Note added and locked" in (pg.text_content("#toast") or ""), f"{w}: the sheet closes and says so")
 
-            pg.click("#new-btn"); pg.wait_for_timeout(200)
+            pg.click("#new-btn:visible, #lb-new:visible"); pg.wait_for_timeout(200)
             check(pg.text_content("#capture-save") == "Save" and pg.is_visible("label:has(#c-file)"), f"{w}: the + sheet is back to normal afterwards")
             pg.click("#capture-cancel")
             check(not errors, f"{w}: no page errors {errors[:1]}")

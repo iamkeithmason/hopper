@@ -324,3 +324,73 @@ button.chip { border: 0; font: inherit; color: inherit; }
 .set-read ul { margin: 0 0 10px; padding-left: 18px; font-size: 14px; }
 .set-read li { margin: 2px 0; }
 .set-read .dn-more .dn-label { margin-top: 10px; }
+
+/* ---------- Phone, left-handed (HOP-39, option C "one bar") ----------
+   Below 700px the controls move to the bottom, where Keith's left thumb rests: primary actions on the left, rare
+   ones on the right, lists that grow upward from the thumb, and destructive choices furthest away. Nothing that
+   scrolls sideways starts within 16px of the left edge (Android's back gesture), and nothing opens on a swipe up
+   (the Pixel home gesture). Desktop is unchanged. */
+.lbar, .phone-only { display: none; }
+@media (max-width: 699px) {
+  header#top { display: none; }
+  main { padding-top: calc(env(safe-area-inset-top) + 10px); padding-bottom: calc(env(safe-area-inset-bottom) + 100px); }
+  .lbar { display: flex; flex-direction: column; align-items: stretch; gap: 8px; position: fixed; z-index: 15; left: max(16px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right)); bottom: calc(env(safe-area-inset-bottom) + 12px); transition: transform .22s ease; }
+  .lbar.hide { transform: translateY(calc(100% + 40px)); }
+  .lb-row { display: flex; align-items: center; gap: 10px; }
+  .lb-topics { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; white-space: nowrap; padding: 2px 0; }
+  .lb-topics::-webkit-scrollbar { display: none; }
+  .lb-topics button { flex: none; background: var(--card); border-radius: 17px; padding: 7px 14px; font-size: 13.5px; box-shadow: 0 0 0 1px var(--line), 0 3px 10px rgba(0,0,0,.08); }
+  .lb-topics button.on { background: var(--ink); color: var(--bg); box-shadow: none; }
+  #home:has(.lb-topics:not([hidden])) main { padding-bottom: calc(env(safe-area-inset-bottom) + 146px); }
+  body:has(.lb-topics:not([hidden])) .toast { bottom: calc(env(safe-area-inset-bottom) + 124px); }
+  .lb-new { width: 52px; height: 52px; border-radius: 26px; background: var(--ink); color: var(--bg); display: grid; place-items: center; flex: none; box-shadow: 0 3px 10px rgba(0,0,0,.2); }
+  .lb-new svg { width: 24px; height: 24px; fill: currentColor; }
+  .lb-pill { flex: 1; min-width: 0; height: 52px; border-radius: 26px; background: var(--card); box-shadow: 0 0 0 1px var(--line), 0 6px 18px rgba(0,0,0,.12); display: flex; align-items: center; gap: 8px; padding: 0 18px 0 16px; text-align: left; }
+  .lb-pill svg { width: 20px; height: 20px; fill: var(--soft); flex: none; }
+  #lb-where { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; max-width: 65%; }
+  #lb-hint { color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
+
+  /* the navigation sheet */
+  .nav-sheet { display: flex; flex-direction: column; padding: 0; height: auto; max-height: 88vh; overflow: hidden; }
+  .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--line); margin: 8px auto 2px; flex: none; }
+  .ns-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; padding: 4px 8px 6px; }
+  .ns-list > :first-child { margin-top: auto; }
+  .ns-grp { font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--soft); font-weight: 600; margin: 14px 12px 4px; }
+  .ns-row { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 12px; border-radius: 12px; text-align: left; width: 100%; flex: none; }
+  .ns-row svg { width: 18px; height: 18px; fill: var(--soft); flex: none; }
+  .ns-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ns-cnt { margin-left: auto; color: var(--soft); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .ns-row.on { background: var(--chip); font-weight: 600; }
+  .ns-row.go { background: var(--ink); color: var(--bg); font-weight: 600; margin-top: 8px; }
+  .ns-row.go svg { fill: var(--bg); }
+  .ns-row { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; } /* long-press pins (HOP-13) */
+  .ns-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 6px 6px; flex: none; }
+  .ns-chips button { background: var(--chip); border-radius: 16px; padding: 7px 13px; font-size: 13.5px; }
+  .ns-chips button.on { background: var(--ink); color: var(--bg); }
+  .ns-foot { flex: none; padding: 8px 10px calc(env(safe-area-inset-bottom) + 10px); border-top: 1px solid var(--line); }
+  #ns-q { height: 48px; border-radius: 24px; padding: 10px 18px; }
+
+  /* toasts: bottom left, above the bar, so an action like Add note lands under the thumb */
+  .toast { left: 16px; transform: none; bottom: calc(env(safe-area-inset-bottom) + 78px); max-width: calc(100vw - 32px); }
+
+  /* note view: one bottom bar, back far left, ⋯ at the right end opening upward */
+  .detail .editor-bar { display: none; }
+  .phone-only { display: inline-block; }
+  .detail .editor-foot { padding-left: 16px; }
+  #d-back { width: 52px; height: 46px; border-radius: 23px; background: var(--chip); color: var(--ink); margin-right: 4px; }
+  .d-body { padding-top: 18px; }
+  #d-meta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .menu-pop { top: auto; bottom: calc(env(safe-area-inset-bottom) + 62px); display: flex; flex-direction: column-reverse; }
+
+  /* capture: Save first, under the thumb; Cancel at the far end */
+  .capture .actions #capture-save { order: -3; height: 48px; border-radius: 24px; padding: 0 26px; }
+  .capture .actions label:has(#c-file) { order: -2; }
+  .capture .actions label:has(#c-lock) { order: -1; }
+  .capture .actions #capture-cancel { order: 2; }
+
+  /* tag picker: the filter sits at the bottom, above the keyboard */
+  #tag-sheet .sheet { display: flex; flex-direction: column; overflow: hidden; }
+  #tag-list { order: 2; flex: 1; min-height: 0; overflow-y: auto; align-content: end; }
+  #tag-filter { order: 3; margin: 8px 0 0; }
+}
+@media (max-width: 699px) and (prefers-reduced-motion: reduce) { .lbar { transition: none; } }
