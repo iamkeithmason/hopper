@@ -789,7 +789,7 @@ Deno.serve(async (req: Request) => {
         const links = await sql`select url, page_title, page_text, thumbnail_url, captured_on, page_height_px_at_1440, videos_on_page, layout_read,
                                   kind, transcript_summary, (transcript is not null) as has_transcript, fetch_status
                                 from hopper.note_links where note_id = ${n.id} order by (layout_read is null), url`;
-        const atts = await sql`select storage_path, caption, design_read, image_role, source_page_url, position_from_top_px_at_1440,
+        const atts = await sql`select id, storage_path, caption, design_read, image_role, source_page_url, position_from_top_px_at_1440,
                                  rendered_width_at_1440, caption_on_page
                                from hopper.attachments where note_id = ${n.id}
                                order by source_page_url nulls first, position_from_top_px_at_1440 nulls first, id`;
@@ -809,7 +809,7 @@ Deno.serve(async (req: Request) => {
             tags,
             links: links.map(({ layout_read, ...l }: any) => ({ ...l, page_read: pageReadFor(layout_read) })),
             // Each image says where it came from: a page's screenshot (first screens, whole page) or figure, or neither.
-            images: atts.map((a: any) => ({ url: urls[a.storage_path] ?? null, caption: a.caption, design: designFor(a.design_read),
+            images: atts.map((a: any) => ({ id: a.id, url: urls[a.storage_path] ?? null, caption: a.caption, design: designFor(a.design_read),
               role: a.image_role ?? null, page: a.source_page_url ?? null, top: a.position_from_top_px_at_1440 ?? null,
               width_at_1440: a.rendered_width_at_1440 ?? null, caption_on_page: a.caption_on_page ?? null })),
           },
@@ -1141,6 +1141,38 @@ Deno.serve(async (req: Request) => {
         }
         if (added) await sql`update hopper.notes set tagged_at = null where id = ${n.id} and not is_locked`;
         return json({ ok: true, added });
+      }
+      case "remove_image":
+      case "replace_image": {
+        // HOP-54: Keith's own pictures on a note (not page screenshots or figures) can be removed, or replaced by one
+        // new picture (shrunk to JPEG by the app). Removed pictures go at once, with their design read; the tagger
+        // looks again.
+        const [n] = await sql`select id, is_locked, deleted_at from hopper.notes where id = ${b.id}`;
+        if (!n || n.is_locked) return json({ error: "not available" }, 404);
+        if (n.deleted_at) return IN_BIN();
+        const [old] = await sql`select id, storage_path from hopper.attachments
+                                where id = ${b.image_id ?? null} and note_id = ${n.id} and image_role is null`;
+        if (!old) return json({ error: "that image isn't on this note" }, 404);
+        if (b.action === "replace_image") {
+          const im = b.image;
+          if (typeof im?.data !== "string" || im.data.length >= 4_000_000) return json({ error: "no image" }, 400);
+          const bytes = Uint8Array.from(atob(im.data), (ch) => ch.charCodeAt(0));
+          const hash = await bytesHash(bytes);
+          const same = await sameOnNote(n.id, hash);
+          if (!same) {
+            const path = `app/${n.id}/${hash.slice(0, 12)}.jpg`;
+            const { error } = await storage.upload(path, bytes, { contentType: "image/jpeg", upsert: true });
+            if (error) return json({ error: error.message }, 500);
+            await sql`insert into hopper.attachments (note_id, storage_path, mime, width, height, content_sha256)
+                      values (${n.id}, ${path}, 'image/jpeg', ${Number(im.width) || null}, ${Number(im.height) || null}, ${hash})`;
+          } else if (same.id === old.id) return json({ ok: true, unchanged: true });
+        }
+        await sql`delete from hopper.attachments where id = ${old.id}`;
+        // The file goes too, unless another row still points at it.
+        const [{ c }] = await sql`select count(*)::int as c from hopper.attachments where storage_path = ${old.storage_path}`;
+        if (old.storage_path && c === 0) await storage.remove([old.storage_path]);
+        await sql`update hopper.notes set tagged_at = null where id = ${n.id} and not is_locked`;
+        return json({ ok: true });
       }
       case "relink": {
         // Repair a note saved before links were recognised: linkify, re-embed and file if it has no projects.

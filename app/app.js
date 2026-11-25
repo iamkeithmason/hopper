@@ -432,23 +432,46 @@ function setEditorChrome(n) {
   $("d-open-link").hidden = !n.links?.length;
 }
 
+// HOP-42: a tag chip is a way in. Tapping it closes the note and shows everything else with that tag: a project
+// opens its feed, a topic opens within the note's project (or as a search when the note has none), and a person or
+// work runs a search. Editing moves behind the pencil: in edit mode chips show confirm and remove, and "+ Tag".
 function chipsFor(n) {
-  const wrap = el("div", { class: "chips" });
+  const editing = !!state.tagEdit;
+  const wrap = el("div", { class: `chips ${editing ? "editing" : ""}` });
   for (const t of n.tags || []) {
     const unsure = t.confidence === "low" && !t.confirmed;
     // Project tags filed by closeness can be confirmed too; confirming makes the note an anchor for that project.
     const confirmable = unsure || (t.kind === "project" && t.added_by === "rule" && !t.confirmed);
-    const why = t.near ? `Filed near “${t.near}”` : unsure ? "The AI isn't sure about this one" : "";
-    const chip = el("span", { class: `chip ${unsure ? "unsure" : ""}`, title: why },
+    const why = editing ? (t.near ? `Filed near “${t.near}”` : unsure ? "The AI isn't sure about this one" : "") : `Show everything tagged ${t.name}`;
+    const chip = el(editing ? "span" : "button", { class: `chip ${unsure ? "unsure" : ""}`, title: why },
       el("span", { class: "k" }, t.kind), t.name, unsure ? "?" : "",
-      t.near ? el("span", { class: "near" }, `near ${t.near}`) : null,
-      confirmable ? el("span", { class: "ok", title: "Confirm", onclick: (e) => { e.stopPropagation(); tagOp(t, "confirm"); } }, "✓") : null,
-      el("span", { class: "x", title: "Remove", onclick: (e) => { e.stopPropagation(); tagOp(t, "remove"); } }, "✕"));
-    chip.addEventListener("click", () => { const open = chip.classList.contains("open"); wrap.querySelectorAll(".chip.open").forEach((c) => c.classList.remove("open")); chip.classList.toggle("open", !open); });
+      editing && t.near ? el("span", { class: "near" }, `near ${t.near}`) : null,
+      editing && confirmable ? el("span", { class: "ok", title: "Confirm", onclick: (e) => { e.stopPropagation(); tagOp(t, "confirm"); } }, "✓") : null,
+      editing ? el("span", { class: "x", title: "Remove", onclick: (e) => { e.stopPropagation(); tagOp(t, "remove"); } }, "✕") : null);
+    if (!editing) chip.addEventListener("click", () => goTag(n, t));
     wrap.append(chip);
   }
-  wrap.append(el("span", { class: "chip add", onclick: openTagPicker }, "+ Tag"));
+  if (editing) wrap.append(el("span", { class: "chip add", onclick: openTagPicker }, "+ Tag"),
+    el("button", { class: "chip edit", onclick: () => setTagEdit(false) }, "Done"));
+  else wrap.append(el("button", { class: "chip edit", title: "Edit tags", "aria-label": "Edit tags", onclick: () => setTagEdit(true) }, icon("edit")));
   return wrap;
+}
+function redrawChips() { if (state.note) $("d-chips").replaceWith(Object.assign(chipsFor(state.note), { id: "d-chips" })); }
+function setTagEdit(on) { state.tagEdit = on; redrawChips(); }
+
+async function goTag(n, t) {
+  const projectOf = (name) => state.projects.find((p) => p.name === name);
+  const home = t.kind === "project" ? projectOf(t.name)
+    : t.kind === "topic" ? (n.tags || []).filter((x) => x.kind === "project").map((x) => projectOf(x.name)).find(Boolean) : null;
+  if (history.state?.note) history.back(); else { await closeDetail(); history.replaceState({}, "", "/"); }
+  setView(null);
+  if (home) {
+    await pickProject(home.id);
+    if (t.kind === "topic") { state.topic = t.name; pickTopic(); }
+  } else {
+    state.project = null; state.topic = null; renderPills(); $("subpills").hidden = true;
+    $("q").value = t.name; state.q = t.name; resetFeed();
+  }
 }
 
 async function tagOp(t, op) {
@@ -457,7 +480,7 @@ async function tagOp(t, op) {
     await api({ action: "tag", id: n.id, kind: t.kind, name: t.name, op });
     if (op === "remove") n.tags = n.tags.filter((x) => !(x.kind === t.kind && x.name === t.name));
     if (op === "confirm") { t.confirmed = true; t.confidence = "high"; }
-    $("d-chips").replaceWith(Object.assign(chipsFor(n), { id: "d-chips" }));
+    redrawChips();
     refreshCard(n.id, cardFromNote(n));
   } catch (e) { toast(e.message); }
 }
@@ -485,7 +508,7 @@ async function addTag(kind, name) {
   try {
     await api({ action: "tag", id: n.id, kind, name, op: "add" });
     n.tags = [...(n.tags || []), { kind, name, confidence: "high", confirmed: true }];
-    $("d-chips").replaceWith(Object.assign(chipsFor(n), { id: "d-chips" }));
+    redrawChips();
     closeOverlay("tag-sheet");
     refreshCard(n.id, cardFromNote(n));
   } catch (e) { toast(e.message); }
@@ -552,7 +575,49 @@ function otherImages(n) {
       el("a", { href: f.url, target: "_blank", rel: "noopener" }, el("img", { src: f.url, alt: f.caption || "", loading: "lazy" })),
       el("div", {},
         f.design?.summary ? el("p", {}, f.design.summary) : null,
-        f.design?.moves?.length ? el("div", { class: "chips" }, f.design.moves.map((m) => el("span", { class: "chip" }, m))) : null))));
+        f.design?.moves?.length ? el("div", { class: "chips" }, f.design.moves.map((m) => el("span", { class: "chip" }, m))) : null,
+        n.deleted_at ? null : imageActions(n, f)))));
+}
+
+// HOP-54: Keith's own pictures on a note (not page screenshots or figures) each have Replace and Remove; removing
+// happens at once. "Add image" appears below them while the note has room (four at most).
+const ownImages = (n) => (n.images || []).filter((i) => i.id && !i.role && !i.page);
+function imageBlock(n) {
+  const imgs = topImages(n), editable = !n.deleted_at && !n.locked;
+  const room = editable && ownImages(n).length < MAX_IMAGES && !hasPages(n);
+  if (!imgs.length) return null;
+  return el("div", { class: "d-images" },
+    imgs.map((i) => el("figure", { class: "d-img" }, el("img", { src: i.url, alt: i.caption || "" }), editable ? imageActions(n, i) : null)),
+    room && imgs.length ? el("div", { class: "img-acts" }, pickButton("Add image", true, async (pics) => {
+      await api({ action: "add_images", id: n.id, images: await Promise.all(pics.slice(0, MAX_IMAGES - ownImages(n).length).map(shrink)) });
+      return pics.length > 1 ? "Images added" : "Image added";
+    })) : null);
+}
+function imageActions(n, i) {
+  if (!i.id || i.role || i.page) return null;
+  const remove = el("button", { type: "button", class: "p-act" }, "Remove");
+  remove.addEventListener("click", async () => {
+    remove.disabled = true; remove.textContent = "Removing…";
+    try { await api({ action: "remove_image", id: n.id, image_id: i.id }); toast("Image removed"); return openNote(n.id, false); }
+    catch (err) { toast(err.message); remove.disabled = false; remove.textContent = "Remove"; }
+  });
+  return el("div", { class: "img-acts" },
+    pickButton("Replace", false, async ([pic]) => { await api({ action: "replace_image", id: n.id, image_id: i.id, image: await shrink(pic) }); return "Image replaced"; }),
+    remove);
+}
+// A text button that opens the file picker and hands the chosen images to act, then reopens the note.
+function pickButton(label, multiple, act) {
+  const file = el("input", { type: "file", accept: "image/*", multiple, hidden: true });
+  const b = el("button", { type: "button", class: "p-act", onclick: () => file.click() }, label);
+  file.addEventListener("change", async () => {
+    const pics = [...file.files].filter((f) => f.type.startsWith("image/"));
+    file.value = "";
+    if (!pics.length) return;
+    b.disabled = true; b.textContent = "Saving…";
+    try { toast(await act(pics)); return openNote(state.note.id, false); }
+    catch (err) { toast(err.message); b.disabled = false; b.textContent = label; }
+  });
+  return el("span", {}, b, file);
 }
 
 function designNotes(n) {
@@ -757,7 +822,7 @@ async function openNote(id, push = true) {
   $("detail").hidden = false; document.body.style.overflow = "hidden";
   try {
     const { note: n, related } = await api({ action: "note", id });
-    state.note = n;
+    state.note = n; state.tagEdit = false;
     setEditorChrome(n);
     const binBar = n.deleted_at ? binBanner(n) : null;
     if (n.locked) {
@@ -781,7 +846,7 @@ async function openNote(id, push = true) {
     if (n.deleted_at) { title.readOnly = true; bodyBox.readOnly = true; }
     body.replaceChildren(...[
       binBar,
-      topImages(n).length ? el("div", { class: "d-images" }, topImages(n).map((i) => el("img", { src: i.url, alt: i.caption || "" }))) : null,
+      imageBlock(n),
       designNotes(n),
       title,
       n.deleted_at ? null : Object.assign(chipsFor(n), { id: "d-chips" }),
