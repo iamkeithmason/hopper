@@ -656,6 +656,25 @@ function designNotes(n) {
           row("Kind", d.kind))))));
 }
 
+// HOP-31: the note's images read together. Leads with what the set is, then how to borrow it, with page types,
+// what stays the same, what changes and the order folded away.
+function setRead(n) {
+  const r = n.set_read;
+  if (!r) return null;
+  const list = (items) => items?.length ? el("ul", {}, items.map((x) => el("li", {}, x))) : null;
+  return el("section", { class: "design-notes set-read" },
+    el("h3", {}, "The images as a set"),
+    el("p", { class: "dn-summary" }, r.summary),
+    r.borrow ? el("div", { class: "borrow" }, el("p", { class: "borrow-k" }, "How to borrow the set"), el("p", {}, r.borrow)) : null,
+    el("details", { class: "dn-more" },
+      el("summary", {}, "Kinds of page, what stays, what changes"),
+      r.page_types.length ? el("div", {}, el("p", { class: "dn-label" }, "Kinds of page"),
+        el("ul", {}, r.page_types.map((t) => el("li", {}, el("b", {}, t.type), ` (image${t.images.length > 1 ? "s" : ""} ${t.images.join(", ")}): ${t.what_it_does}`)))) : null,
+      r.constants.length ? el("div", {}, el("p", { class: "dn-label" }, "What stays the same"), list(r.constants)) : null,
+      r.variations.length ? el("div", {}, el("p", { class: "dn-label" }, "What changes"), list(r.variations)) : null,
+      r.sequence && !/^none\b/i.test(r.sequence) ? el("div", {}, el("p", { class: "dn-label" }, "Order"), el("p", {}, r.sequence)) : null));
+}
+
 // A captured page (portfolio case study and the like), one section each: the page link, the desktop and phone first
 // screens as small thumbnails, the whole page as one continuous image in a scroll box (its slices stacked edge to
 // edge), then the page read, and the page's figures folded away with where each sits on the page.
@@ -852,6 +871,7 @@ async function openNote(id, push = true) {
     body.replaceChildren(...[
       binBar,
       imageBlock(n),
+      setRead(n),
       designNotes(n),
       title,
       n.deleted_at ? null : Object.assign(chipsFor(n), { id: "d-chips" }),

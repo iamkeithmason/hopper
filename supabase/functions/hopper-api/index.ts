@@ -843,6 +843,12 @@ Deno.serve(async (req: Request) => {
             list_items: n.list_items, why_saved: n.why_saved, created_at: n.created_at, source: n.source,
             pinned: n.pinned, archived: n.archived, color: n.keep_color, edited_at: n.edited_at, ...bin,
             aesthetics: n.aesthetics ?? [],
+            // HOP-31: the read of the note's images as a set, when there is one.
+            set_read: n.set_read?.summary ? {
+              summary: n.set_read.summary, coherent: n.set_read.is_coherent_set, page_types: n.set_read.page_types ?? [],
+              constants: n.set_read.constants ?? [], variations: n.set_read.variations ?? [], sequence: n.set_read.sequence || null,
+              good_for: n.set_read.good_reference_for ?? [], borrow: n.set_read.how_to_borrow || null,
+            } : null,
             tags,
             links: links.map(({ layout_read, ...l }: any) => ({ ...l, page_read: pageReadFor(layout_read) })),
             // Each image says where it came from: a page's screenshot (first screens, whole page) or figure, or neither.

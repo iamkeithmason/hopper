@@ -130,7 +130,7 @@ const TOOLS = [
   {
     name: "get_note",
     title: "Get a note",
-    description: "One note in full: title, text, why it was saved, summary, tags, links with fetched page titles, and design reads of any images. Long texts come in parts of about 12,000 characters: when truncated is true, call again with offset set to next_offset to read on.",
+    description: "One note in full: title, text, why it was saved, summary, tags, links with fetched page titles, design reads of any images, and, for notes with several images, a set_read of them together (page types, what stays constant, what varies, order). Long texts come in parts of about 12,000 characters: when truncated is true, call again with offset set to next_offset to read on.",
     inputSchema: {
       type: "object",
       properties: {
@@ -562,7 +562,7 @@ function part(body: string, offset: number, length: number) {
 async function getNote(a: any) {
   const id = String(a.id ?? "");
   if (!UUID.test(id)) return [text("That isn't a note id.")];
-  const [n] = await sql`select id, title, body, list_items, why_saved, summary, format, period, aesthetics, created_at, edited_at
+  const [n] = await sql`select id, title, body, list_items, why_saved, summary, format, period, aesthetics, set_read, created_at, edited_at
                         from hopper.notes_for_ai where id = ${id}`;
   if (!n) return [text("No such note, or it is locked.")];
   const tags = await sql`
@@ -588,6 +588,8 @@ async function getNote(a: any) {
     projects: group("project"), topics: group("topic"), people: group("person"), works: group("work"),
     aesthetics: n.aesthetics, links, benchmark: bench,
     images: atts.length ? atts.map((x: any) => brief(x.design_read, x, links.some((l: any) => l.page_read))) : undefined,
+    // HOP-31: the note's images read together, as a set.
+    set_read: n.set_read?.summary ? (({ v, n: _n, model, read_at, images, error, ...rest }: any) => rest)(n.set_read) : undefined,
   })];
 }
 
@@ -891,7 +893,7 @@ async function handle(msg: any) {
       return ok({
         protocolVersion: typeof params?.protocolVersion === "string" ? params.protocolVersion : PROTOCOL,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "hopper", title: "Hopper", version: "1.14.0" },
+        serverInfo: { name: "hopper", title: "Hopper", version: "1.15.0" },
         instructions: INSTRUCTIONS,
       });
     case "ping":
