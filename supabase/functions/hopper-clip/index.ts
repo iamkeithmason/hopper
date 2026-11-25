@@ -36,7 +36,9 @@ Deno.serve(async (req: Request) => {
     const r = await fetch(API, {
       method: "POST",
       headers: { "content-type": "application/json", "x-hopper-token": tok },
-      body: JSON.stringify({ action: "capture", title, text, url, note, images, lock }),
+      // HOP-43: hopper-api records the route and the device, from the browser's user agent.
+      body: JSON.stringify({ action: "capture", title, text, url, note, images, lock,
+        route: "extension", user_agent: req.headers.get("user-agent") ?? "" }),
     });
     return new Response(await r.text(), { status: r.status, headers: { "content-type": "application/json" } });
   } catch (e) {

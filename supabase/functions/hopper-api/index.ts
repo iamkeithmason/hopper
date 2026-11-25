@@ -9,6 +9,8 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // "pin_project" { project_id, pinned } pins a project pill to the front of the row (HOP-13).
 // POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin" | "event", ... }
 // "capture" also takes, from the invoke token only, projects: exact project names to file the note in (hopper-mcp).
+// "capture" records its route (HOP-43): route "share" or "new" from the app, "extension" (with the browser's user_agent)
+// from hopper-clip, "mcp" for source "assistant"; capture_device comes from the user agent.
 // "capture" also takes image_urls (fetched and kept by Hopper), screenshot (first screen and whole page of the url,
 // from the screenshot function on the Vercel app) and, from the invoke token only, source: "assistant".
 // "screenshot" { id, url?, views? } adds page screenshots to an existing note (its link, or another page as a new link), or retakes them.
@@ -440,6 +442,20 @@ async function embedAndFile(id: string, refile: boolean) {
 
 // Who can unlock a note in the app: Keith's own locks, and safety-check locks on notes he captured
 // himself (in the app, or clipped to Notion before Hopper existed), or asked Claude to save for him.
+// HOP-43: a coarse device name from a user agent. iPads ask for desktop pages and say "Macintosh", so the app
+// also says whether the screen takes touch.
+function deviceFrom(ua: string, touch: boolean): string | null {
+  if (!ua) return null;
+  if (/iPad/.test(ua) || (/Macintosh/.test(ua) && touch)) return "iPad";
+  if (/iPhone|iPod/.test(ua)) return "iPhone";
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? "Android phone" : "Android tablet";
+  if (/Macintosh|Mac OS X/.test(ua)) return "Mac";
+  if (/Windows/.test(ua)) return "Windows";
+  if (/CrOS/.test(ua)) return "Chromebook";
+  if (/Linux/.test(ua)) return "Linux";
+  return "other";
+}
+
 const OWN_CAPTURES = ["app", "notion-clip", "assistant"];
 const canUnlock = (n: any) => n.lock_source === "user" || (OWN_CAPTURES.includes(n.source) && ["classifier", "pattern"].includes(n.lock_source));
 
@@ -784,14 +800,21 @@ Deno.serve(async (req: Request) => {
         // Only trusted server-side callers (hopper-mcp) may mark a note as saved by Claude; everything else is the app.
         const source = user.email === "service" && b.source === "assistant" ? "assistant" : "app";
         const lock = Boolean(b.lock);
+        // HOP-43: how and on what the note was captured. Only the app's own routes are taken from a signed-in caller.
+        const service = user.email === "service";
+        const route = source === "assistant" ? "mcp"
+          : service ? (b.route === "extension" ? "extension" : "app")
+          : (["share", "new"].includes(b.route) ? b.route : "app");
+        const device = source === "assistant" ? null
+          : deviceFrom(service ? String(b.user_agent ?? "") : (req.headers.get("user-agent") ?? ""), Boolean(b.touch));
         // hopper-mcp only (HOP-60): projects named exactly, to file the note there instead of filing by closeness.
         const projectNames: string[] = user.email === "service" && Array.isArray(b.projects) ? b.projects.map(String).slice(0, 10) : [];
         const chosen = projectNames.length ? await sql`select id, name from hopper.projects where name = any(${projectNames}::text[])` : [];
         if (chosen.length < new Set(projectNames).size) return json({ error: "unknown project" }, 400);
         const [n] = await sql`
-          insert into hopper.notes (source, title, body, why_saved, is_locked, lock_source, lock_reason, format)
+          insert into hopper.notes (source, title, body, why_saved, is_locked, lock_source, lock_reason, format, capture_route, capture_device)
           values (${source}, ${title}, ${text}, ${why}, ${lock}, ${lock ? "user" : null}, ${lock ? "Locked at capture" : null},
-                  ${(images.length || imageUrls.length) && !url && !text ? "image" : null})
+                  ${(images.length || imageUrls.length) && !url && !text ? "image" : null}, ${route}, ${device})
           returning id, created_at`;
         // Screenshots first, so the first screen is the note's picture on the board.
         let shotResult: any = null;

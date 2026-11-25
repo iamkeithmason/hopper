@@ -988,7 +988,9 @@ $("capture-form").addEventListener("submit", async (e) => {
   const shared = state.capShared, pics = state.capImages || [];
   const typed = $("c-note").value;
   const payload = { action: "capture", title: $("c-title").value, url: s?.url || "", lock: $("c-lock").checked,
-    text: shared ? (s.text || "") : typed, note: shared ? typed : "" };
+    text: shared ? (s.text || "") : typed, note: shared ? typed : "",
+    // HOP-43: how the note came in, and whether the screen takes touch (iPads report themselves as Macs).
+    route: s ? "share" : "new", touch: navigator.maxTouchPoints > 1 };
   if (!payload.title.trim() && !payload.text.trim() && !payload.url && !payload.note.trim() && !pics.length) { toast("Nothing to save yet"); return; }
   $("capture-save").disabled = true;
   if (pics.length) {
