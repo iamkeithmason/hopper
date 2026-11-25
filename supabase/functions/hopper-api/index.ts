@@ -23,6 +23,7 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
 // "refetch" { id } reads a note's page again, plainly and then in a real browser (HOP-50); "add_images" { id, images }
 // adds pictures to a saved note. Captures whose page refuses the fetch get the same browser rescue in the background.
+// "measure" { id, url? } measures a captured page's motion and type (HOP-55, 56, 57); desktop captures do it in the background.
 
 const URL_ = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -370,6 +371,69 @@ async function takeShot(url: string, roles = ROLES, motion = true): Promise<Shot
     if (!r.ok || !(j.first || j.phone)) return { error: j.error ? `${j.error}${j.stage ? ` (${j.stage})` : ""}` : `screenshot ${r.status}` };
     return j as Shot;
   } catch (e) { return { error: `screenshot: ${String(e).slice(0, 120)}` }; }
+}
+
+// HOP-55, 56, 57: the page measured in the capture browser, in two calls side by side (each has its own 60 seconds):
+// motion (what moves, how long, which easing, how far, staggers, load or scroll, what reduced motion keeps, which
+// library) and type (text treatments with their roles, and icon sizes, at 1440 and 390). Both go on the page's link
+// (note_links.motion, type_scale). Strips of the entrance and the first scroll reveal join the page's motion strips.
+// Measurements cost no model credit. Locked and binned notes are left alone.
+async function shotCall(body: Record<string, unknown>) {
+  const [cfg] = await sql`select (select value from hopper.settings where key = 'shot_url') as shot_url,
+    (select decrypted_secret from vault.decrypted_secrets where name = 'hopper_shot_token') as tok`;
+  if (!cfg?.shot_url || !cfg?.tok) return { error: "screenshots aren't set up" };
+  try {
+    const r = await fetch(cfg.shot_url, { method: "POST", signal: AbortSignal.timeout(75000),
+      headers: { "content-type": "application/json", "x-shot-token": cfg.tok }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    return r.ok ? j : { error: j.error ?? `measure ${r.status}` };
+  } catch (e) { return { error: `measure: ${String(e).slice(0, 120)}` }; }
+}
+async function measurePage(noteId: string, pageUrl: string) {
+  const [n] = await sql`select is_locked, deleted_at from hopper.notes where id = ${noteId}`;
+  if (!n || n.is_locked || n.deleted_at) return { error: "not available" };
+  const [motion, type] = await Promise.all([shotCall({ url: pageUrl, measure: "motion" }), shotCall({ url: pageUrl, measure: "type" })]);
+  const out: Record<string, unknown> = {};
+  if (!motion.error && motion.motion) {
+    await sql`update hopper.note_links set motion = ${sql.json(motion.motion)} where note_id = ${noteId} and url = ${pageUrl}`;
+    out.motion = true;
+    const stem = `${slugOf(pageUrl)}-${(await sha256(pageUrl)).slice(0, 6)}`;
+    const names: Record<string, string> = { "first screen as it loads": "entrance", "first scroll reveal": "scroll-reveal" };
+    const keep: string[] = [];
+    for (const m of (motion.strips ?? []) as any[]) {
+      const tag = names[m.where];
+      if (!tag || typeof m.image !== "string") continue;
+      const bytes = decodeBase64(m.image);
+      const path = `shot/${noteId}/${stem}--motion-${tag}.jpg`;
+      const { error } = await storage.upload(path, bytes, { contentType: "image/jpeg", upsert: true });
+      if (error) continue;
+      const size = pictureSize(bytes);
+      const original = `capture:${pageUrl}#motion-${tag}`;
+      const caption = tag === "entrance"
+        ? `three frames of the first screen as it loads, 0, 0.6 and 1.5 seconds after it appears, left to right (${m.changed_pct}% of the view changes)`
+        : `three frames of the first scroll reveal, 0, 0.4 and 0.9 seconds after scrolling to ${m.top} px, left to right (${m.changed_pct}% of the view changes)`;
+      await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption,
+                  image_role, source_page_url, position_from_top_px_at_1440, captured_on, content_sha256)
+                values (${noteId}, ${original}, ${path}, 'image/jpeg', ${size?.width ?? null}, ${size?.height ?? null}, ${caption},
+                  'motion-strip', ${pageUrl}, ${m.top}, current_date, ${await bytesHash(bytes)})
+                on conflict (note_id, original_file) do update set storage_path = excluded.storage_path, width = excluded.width,
+                  height = excluded.height, caption = excluded.caption, position_from_top_px_at_1440 = excluded.position_from_top_px_at_1440,
+                  captured_on = excluded.captured_on, content_sha256 = excluded.content_sha256, design_read = null`;
+      keep.push(original);
+    }
+    // A page that no longer moves on entry or on scroll loses its old strip of that kind.
+    const gone = await sql`delete from hopper.attachments where note_id = ${noteId} and source_page_url = ${pageUrl}
+                             and original_file in (${`capture:${pageUrl}#motion-entrance`}, ${`capture:${pageUrl}#motion-scroll-reveal`})
+                             and not (original_file = any(${keep}::text[])) returning storage_path`;
+    const paths = gone.map((g: any) => g.storage_path).filter(Boolean);
+    if (paths.length) await storage.remove(paths);
+    out.strips = keep.length;
+  } else out.motion_error = motion.error ?? "no motion reading";
+  if (!type.error && type.type_scale) {
+    await sql`update hopper.note_links set type_scale = ${sql.json(type.type_scale)} where note_id = ${noteId} and url = ${pageUrl}`;
+    out.type = true;
+  } else out.type_error = type.error ?? "no type reading";
+  return out;
 }
 
 // Tall pages come back scaled down (to fit the 8000 px image limit), and past 40% cut short.
@@ -915,6 +979,7 @@ Deno.serve(async (req: Request) => {
         if (wantShot) {
           const shot = await takeShot(url!);
           shotResult = "error" in shot ? shot : { kept: await keepShots(n.id, shot, url!), clipped: shot.clipped, full_height: shot.full_height };
+          if (!("error" in shot) && !lock) background(measurePage(n.id, url!));
         }
         if (url) await sql`insert into hopper.note_links (note_id, url, page_title) values (${n.id}, ${url}, ${title}) on conflict (note_id, url) do nothing`;
         for (const [i, im] of images.entries()) {
@@ -994,6 +1059,8 @@ Deno.serve(async (req: Request) => {
         const shot = await takeShot(url, roles);
         if ("error" in shot) return json(shot, 502);
         const kept = await keepShots(n.id, shot, url);
+        // A desktop retake measures the page again, after the reply (HOP-55, 56, 57).
+        if (roles.includes("first-screen-1440")) background(measurePage(n.id, url));
         return json({ ok: true, kept, clipped: shot.clipped, full_height: shot.full_height });
       }
       case "prune_shots": {
@@ -1022,6 +1089,18 @@ Deno.serve(async (req: Request) => {
         }
         const [{ left }] = await sql`select count(*)::int as left from hopper.attachments where storage_path is not null and content_sha256 is null`;
         return json({ ok: true, hashed, failed, left });
+      }
+      case "measure": {
+        // HOP-55, 56, 57: measure a captured page's motion and type again, without retaking its screenshots.
+        // { id, url? } (the note's first captured page by default). Waits for the readings and says what was stored.
+        const [n] = await sql`select id, is_locked, deleted_at from hopper.notes where id = ${b.id}`;
+        if (!n || n.is_locked) return json({ error: "not available" }, 404);
+        if (n.deleted_at) return IN_BIN();
+        const [link] = b.url
+          ? await sql`select url from hopper.note_links where note_id = ${n.id} and url = ${String(b.url)}`
+          : await sql`select url from hopper.note_links where note_id = ${n.id} order by captured_on is null, url limit 1`;
+        if (!link || !/^https?:\/\//i.test(link.url)) return json({ error: "this note has no captured page at that address" }, 400);
+        return json({ ok: true, url: link.url, ...(await measurePage(n.id, link.url)) });
       }
       case "refetch": {
         // HOP-50 Retry: read the note's page again, plainly and then in a real browser. Says whether it worked.
