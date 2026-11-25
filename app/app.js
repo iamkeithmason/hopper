@@ -728,6 +728,13 @@ function fromPage(n) {
       el("img", { src: l.thumbnail_url, alt: l.page_title || "", referrerpolicy: "no-referrer" }));
   }
   const desc = l.page_text || (!n.body && n.format === "bookmark" ? n.summary : null);
+  // A note can link the same video twice (a share link and the full address): show its summary once.
+  const shown = new Set();
+  const summaryOnce = (x) => {
+    if (!x.transcript_summary || shown.has(x.transcript_summary)) return null;
+    shown.add(x.transcript_summary);
+    return videoSummary(x);
+  };
   return el("section", { class: "from-page" },
     el("div", { class: "divider" }, "From the page"),
     media,
@@ -735,9 +742,9 @@ function fromPage(n) {
     el("span", { class: "p-host" }, host),
     desc ? el("p", { class: "p-desc" }, String(desc).slice(0, 600)) : null,
     unreadPage(n, l, desc),
-    videoSummary(l),
+    summaryOnce(l),
     ...n.links.slice(1).flatMap((x) => [el("a", { class: "p-link", href: x.url, title: x.url, target: "_blank", rel: "noopener noreferrer" }, x.page_title || shortUrl(x.url), " ↗"),
-      videoSummary(x)]));
+      summaryOnce(x)]));
 }
 
 async function openNote(id, push = true) {

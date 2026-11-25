@@ -80,8 +80,10 @@ async function youtubeTranscript(tabId, url) {
       target: { tabId }, world: "MAIN",
       func: async () => {
         const wait = (ms) => new Promise((ok) => setTimeout(ok, ms));
-        const SEGMENTS = "ytd-transcript-segment-renderer .segment-text, transcript-segment-view-model .yt-core-attributed-string";
-        const read = () => [...document.querySelectorAll(SEGMENTS)].map((e) => e.textContent.replace(/\s+/g, " ").trim()).filter(Boolean);
+        // One element per line, old panel and new; within a line, its text node (YouTube renames these classes).
+        const read = () => [...document.querySelectorAll("ytd-transcript-segment-renderer, transcript-segment-view-model")].map((s) =>
+          (s.querySelector(".segment-text, .ytAttributedStringHost, .yt-core-attributed-string") || s).textContent.replace(/\s+/g, " ").trim())
+          .filter(Boolean);
         let lines = read();
         if (!lines.length) {
           document.querySelector("#description-inline-expander #expand, tp-yt-paper-button#expand")?.click();
@@ -91,7 +93,7 @@ async function youtubeTranscript(tabId, url) {
           if (!button) return "";
           button.click();
           for (let i = 0; i < 20 && !lines.length; i++) { await wait(300); lines = read(); }
-          await wait(500); // long transcripts fill in a beat after the first lines
+          await wait(1000); // long transcripts fill in a beat after the first lines
           lines = read();
         }
         return lines.join("\n").slice(0, 400000);
