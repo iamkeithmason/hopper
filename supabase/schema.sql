@@ -14,6 +14,11 @@
 -- hopper.benchmark_scores (columns below are current as of 20 Nov 2026).
 -- 20261120225027_hopper_moves: hopper.moves (visual move vocabulary) and attachments.moves.
 -- 20261121091324_hopper_page_reads: design_sweep also runs for captured pages waiting for a page read (note_links.layout_read).
+-- 20261125173617_hopper_assistant_filing: note_projects.added_by also allows 'assistant' (projects Claude sets through the MCP).
+-- 20261125174922_hopper_pin_projects: projects.pinned_at (pinned project pills, HOP-13).
+-- 20261125181300_hopper_capture_route (run by hand in the SQL editor, so not in schema_migrations): notes.capture_route and notes.capture_device,
+-- hopper.route_for_source(), the notes_capture_route insert trigger, a backfill of capture_route from source,
+-- and the view hopper.capture_counts_weekly.
 --
 -- Extensions used (in schema extensions): vector, pg_net, pg_cron.
 -- Grants: every table and view here has access revoked from public, anon and authenticated.
@@ -49,6 +54,8 @@ create table hopper.notes (
   aesthetics text[] not null default '{}'::text[],
   why_saved text,
   anti_reference boolean not null default false,
+  capture_route text,
+  capture_device text,
   constraint notes_pkey primary key (id),
   constraint notes_keep_file_key unique (keep_file),
   constraint notes_confidence_check check (confidence in ('high','medium','low')),

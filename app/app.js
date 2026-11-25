@@ -108,10 +108,53 @@ async function loadProjects() {
   renderPills();
 }
 
+// HOP-13: long-press a project pill (right-click on a computer) to pin it. Pinned pills come first, in the order they
+// were pinned, with a pin mark; the rest stay in order of recent activity (the order comes from the projects action).
 function renderPills() {
   const nav = $("pills"); nav.replaceChildren();
-  const pill = (label, id) => el("button", { class: state.project === id ? "on" : "", onclick: () => { track("pill", { project_id: id }); pickProject(id); } }, label);
-  nav.append(pill("All", null), ...state.projects.map((p) => pill(p.name, p.id)), el("button", { onclick: openProjects }, "All projects →"));
+  const pill = (label, id) => el("button", { class: state.project === id ? "on" : "", onclick: () => { if (justPinned()) return; track("pill", { project_id: id }); pickProject(id); } }, label);
+  const projectPill = (p) => {
+    const b = el("button", { class: [state.project === p.id ? "on" : "", p.pinned ? "pinned" : ""].filter(Boolean).join(" "),
+      title: p.pinned ? "Long-press or right-click to unpin" : "Long-press or right-click to pin",
+      // A long-press that pinned the project doesn't also open it.
+      onclick: () => { if (b.held || justPinned()) { b.held = false; return; } track("pill", { project_id: p.id }); pickProject(p.id); } },
+      p.pinned ? icon("pinned") : null, p.name);
+    holdToPin(b, p);
+    return b;
+  };
+  nav.append(pill("All", null), ...state.projects.map(projectPill), el("button", { onclick: openProjects }, "All projects →"));
+}
+
+// The pills re-render (in a new order) once a pin is saved, so the tap that ends a long-press can land on a different
+// pill: no pill opens for a moment after a long-press.
+let pinPressAt = 0;
+const justPinned = () => Date.now() - pinPressAt < 1200;
+function holdToPin(b, p) {
+  let timer = null, start = null;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  b.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse") return; // a mouse pins with right-click
+    b.held = false; start = [e.clientX, e.clientY];
+    timer = setTimeout(() => { b.held = true; timer = null; pinPressAt = Date.now(); togglePin(p); }, 550);
+  });
+  b.addEventListener("pointermove", (e) => { if (timer && Math.hypot(e.clientX - start[0], e.clientY - start[1]) > 8) cancel(); });
+  for (const ev of ["pointerup", "pointercancel", "pointerleave"]) b.addEventListener(ev, cancel);
+  // Right-click pins instead of opening the browser menu. A touch long-press can also fire contextmenu: pin once.
+  b.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (b.held) return;
+    if (timer) { cancel(); b.held = true; pinPressAt = Date.now(); } // touch: the browser's own long-press got there first
+    togglePin(p);
+  });
+}
+
+async function togglePin(p) {
+  const pinned = !p.pinned;
+  try {
+    await api({ action: "pin_project", project_id: p.id, pinned });
+    toast(pinned ? `Pinned ${p.name}` : `Unpinned ${p.name}`);
+    await loadProjects();
+  } catch (e) { toast(e.message); }
 }
 
 async function pickProject(id) {
@@ -176,10 +219,20 @@ function card(n) {
     projects ? el("b", {}, projects) : null,
     el("span", {}, fmtDate(n.created_at)));
   const media = n.image ? el("div", { class: "c-media" },
-    el("img", { src: n.image, alt: "", onerror: (e) => { e.target.closest(".card")?.classList.remove("has-media"); e.target.parentNode.replaceWith(hover); } }), hover) : null;
+    el("img", { src: n.image, alt: "", onerror: (e) => { e.target.closest(".card")?.classList.remove("has-media"); e.target.parentNode.replaceWith(hover); } }),
+    mediaMark(n.media), hover) : null;
   return el("div", { class: `card ${n.format || ""} ${colourClass(n.color)}${media ? " has-media" : ""}`, "data-id": n.id, onclick: () => openNote(n.id) },
     n.pinned ? (() => { const s = icon("pinned"); s.classList.add("pin-mark"); return s; })() : null,
     media, text, media ? null : hover, erase);
+}
+
+// HOP-44: one small icon in the corner of a card's picture saying what the note holds (video, audio, PDF, a set of
+// pictures with its count, or a link). hopper-api picks the one by priority.
+const MEDIA_LABEL = { video: "Video", audio: "Audio", pdf: "PDF", set: "Pictures", link: "Link" };
+function mediaMark(m) {
+  if (!m || !MEDIA_LABEL[m.kind]) return null;
+  const label = m.kind === "set" ? `${m.count} pictures` : MEDIA_LABEL[m.kind];
+  return el("span", { class: `c-kind k-${m.kind}`, title: label, "aria-label": label }, icon(`m-${m.kind}`), m.kind === "set" ? el("b", {}, String(m.count)) : null);
 }
 
 // ---------- masonry ----------
@@ -430,6 +483,16 @@ async function addTag(kind, name) {
 
 // What Hopper fetched from a note's link, set apart from Keith's own note:
 // a player for YouTube and Vimeo, otherwise the page's picture; then its title, site and description.
+// A long address as a reader needs it: the site and the start of the path, no query string. The full address stays
+// on the link itself (tap to open, long-press to copy) and in its tooltip.
+function shortUrl(u, max = 48) {
+  try {
+    const x = new URL(u), path = x.pathname.replace(/\/+$/, "");
+    const s = x.hostname.replace(/^www\./, "") + (path && path !== "/" ? path : "");
+    return s.length > max ? s.slice(0, max - 1) + "…" : s;
+  } catch { return u.length > max ? u.slice(0, max - 1) + "…" : u; }
+}
+
 const VIDEO = [
   [/^https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/)|youtu\.be\/)([\w-]{11})/i, (id) => `https://www.youtube-nocookie.com/embed/${id}`],
   [/^https?:\/\/(?:www\.)?vimeo\.com\/(\d+)/i, (id) => `https://player.vimeo.com/video/${id}`],
@@ -614,10 +677,10 @@ function fromPage(n) {
   return el("section", { class: "from-page" },
     el("div", { class: "divider" }, "From the page"),
     media,
-    el("a", { class: "p-link", href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.page_title || l.url, " ↗"),
+    el("a", { class: "p-link", href: l.url, title: l.url, target: "_blank", rel: "noopener noreferrer" }, l.page_title || shortUrl(l.url), " ↗"),
     el("span", { class: "p-host" }, host),
     desc ? el("p", { class: "p-desc" }, String(desc).slice(0, 600)) : null,
-    ...n.links.slice(1).map((x) => el("a", { class: "p-link", href: x.url, target: "_blank", rel: "noopener noreferrer" }, x.page_title || x.url, " ↗")));
+    ...n.links.slice(1).map((x) => el("a", { class: "p-link", href: x.url, title: x.url, target: "_blank", rel: "noopener noreferrer" }, x.page_title || shortUrl(x.url), " ↗")));
 }
 
 async function openNote(id, push = true) {
@@ -888,7 +951,7 @@ function renderCapturePreview() {
   const hasText = !!(s && (s.url || s.text || (state.capShared && s.title)));
   pv.replaceChildren(...[
     thumbs.length ? el("div", { class: "p-imgs" }, ...thumbs) : null,
-    hasText ? el("div", { class: "p-text" }, el("div", { class: "p-title" }, s.title || host || (thumbs.length ? "Shared image" : "Shared text")), el("div", { class: "p-sub" }, s.url || s.text)) : null,
+    hasText ? el("div", { class: "p-text" }, el("div", { class: "p-title" }, s.title || host || (thumbs.length ? "Shared image" : "Shared text")), el("div", { class: "p-sub", title: s.url || "" }, s.url ? shortUrl(s.url, 80) : s.text)) : null,
   ].filter(Boolean));
   pv.hidden = !thumbs.length && !hasText;
 }
@@ -925,7 +988,9 @@ $("capture-form").addEventListener("submit", async (e) => {
   const shared = state.capShared, pics = state.capImages || [];
   const typed = $("c-note").value;
   const payload = { action: "capture", title: $("c-title").value, url: s?.url || "", lock: $("c-lock").checked,
-    text: shared ? (s.text || "") : typed, note: shared ? typed : "" };
+    text: shared ? (s.text || "") : typed, note: shared ? typed : "",
+    // HOP-43: how the note came in, and whether the screen takes touch (iPads report themselves as Macs).
+    route: s ? "share" : "new", touch: navigator.maxTouchPoints > 1 };
   if (!payload.title.trim() && !payload.text.trim() && !payload.url && !payload.note.trim() && !pics.length) { toast("Nothing to save yet"); return; }
   $("capture-save").disabled = true;
   if (pics.length) {

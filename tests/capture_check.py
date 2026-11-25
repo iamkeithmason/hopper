@@ -110,6 +110,7 @@ def main():
                 check(c.get("text") == "Pricing table, full screen" and c.get("note") == "", f"{w}: the typed note is the note's body")
                 ok = all(base64.b64decode(i["data"])[:2] == b"\xff\xd8" and i["width"] > 0 for i in c.get("images", []))
                 check(ok, f"{w}: images are sent as shrunk JPEGs with sizes")
+                check(c.get("route") == "new" and c.get("touch") in (True, False), f"{w}: the + button saves with route new ({c.get('route')})")
             check(pg.is_hidden("#capture"), f"{w}: the sheet closes after saving")
 
             pg.click("#new-btn"); pg.wait_for_timeout(200)

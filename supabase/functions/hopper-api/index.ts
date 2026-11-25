@@ -6,7 +6,11 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // Hopper's private API for the web app.
 // Every request must carry a Supabase Auth access token for the owner's email (hopper.settings 'owner_email').
 // Locked notes never return their body, summary or tags: only id, title, date and the lock.
+// "pin_project" { project_id, pinned } pins a project pill to the front of the row (HOP-13).
 // POST body: { action: "projects" | "topics" | "feed" | "search" | "note" | "capture" | "bin" | "restore" | "empty_bin" | "event", ... }
+// "capture" also takes, from the invoke token only, projects: exact project names to file the note in (hopper-mcp).
+// "capture" records its route (HOP-43): route "share" or "new" from the app, "extension" (with the browser's user_agent)
+// from hopper-clip, "mcp" for source "assistant"; capture_device comes from the user agent.
 // "capture" also takes image_urls (fetched and kept by Hopper), screenshot (first screen and whole page of the url,
 // from the screenshot function on the Vercel app) and, from the invoke token only, source: "assistant".
 // "screenshot" { id, url?, views? } adds page screenshots to an existing note (its link, or another page as a new link), or retakes them.
@@ -436,6 +440,20 @@ async function embedAndFile(id: string, refile: boolean) {
   return await sql`select project, band from hopper.file_note(${id})`;
 }
 
+// HOP-43: a coarse device name from a user agent. iPads ask for desktop pages and say "Macintosh", so the app
+// also says whether the screen takes touch.
+function deviceFrom(ua: string, touch: boolean): string | null {
+  if (!ua) return null;
+  if (/iPad/.test(ua) || (/Macintosh/.test(ua) && touch)) return "iPad";
+  if (/iPhone|iPod/.test(ua)) return "iPhone";
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? "Android phone" : "Android tablet";
+  if (/Macintosh|Mac OS X/.test(ua)) return "Mac";
+  if (/Windows/.test(ua)) return "Windows";
+  if (/CrOS/.test(ua)) return "Chromebook";
+  if (/Linux/.test(ua)) return "Linux";
+  return "other";
+}
+
 // Who can unlock a note in the app: Keith's own locks, and safety-check locks on notes he captured
 // himself (in the app, or clipped to Notion before Hopper existed), or asked Claude to save for him.
 const OWN_CAPTURES = ["app", "notion-clip", "assistant"];
@@ -445,6 +463,7 @@ const canUnlock = (n: any) => n.lock_source === "user" || (OWN_CAPTURES.includes
 // Binned notes also carry deleted_at and erases_at (the earliest time the nightly job erases them).
 async function cards(rows: any[]) {
   const urls = await signed(rows.filter((r) => !r.is_locked).map((r) => r.image_path));
+  const media = await mediaKinds(rows.filter((r) => !r.is_locked).map((r) => r.id));
   return rows.map((r) => {
     const bin = r.deleted_at ? { deleted_at: r.deleted_at, erases_at: erasesAt(r.deleted_at) } : {};
     return r.is_locked
@@ -453,9 +472,31 @@ async function cards(rows: any[]) {
         id: r.id, locked: false, title: r.title, excerpt: r.excerpt, format: r.format, created_at: r.created_at,
         image: r.image_path ? urls[r.image_path] ?? null : (r.link_thumb ?? null),
         host: r.link_url ? String(r.link_url).replace(/^https?:\/\/(www\.)?/, "").split("/")[0] : null,
-        projects: r.projects ?? [], score: r.score ?? undefined, pinned: !!r.pinned, color: r.keep_color ?? null, ...bin,
+        projects: r.projects ?? [], score: r.score ?? undefined, pinned: !!r.pinned, color: r.keep_color ?? null,
+        media: media.get(r.id) ?? null, ...bin,
       };
   });
+}
+
+// What each card's thumbnail holds, for the small icon in its corner (HOP-44), by priority: a video, audio or PDF link,
+// then a set of two or more pictures (with the count), then any other link. Page screenshots don't count as pictures.
+async function mediaKinds(ids: string[]) {
+  const out = new Map<string, { kind: string; count?: number }>();
+  if (!ids.length) return out;
+  const rows = await sql`
+    select n.id,
+      (select count(*)::int from hopper.attachments a where a.note_id = n.id and a.storage_path is not null
+         and (a.image_role is null or a.image_role = 'figure')) as images,
+      (select l.kind from hopper.note_links l where l.note_id = n.id
+         order by case l.kind when 'video' then 0 when 'audio' then 1 when 'pdf' then 2 else 3 end limit 1) as link_kind
+    from unnest(${sql.array(ids)}::uuid[]) as n(id)`;
+  for (const r of rows) {
+    const k = ["video", "audio", "pdf"].includes(r.link_kind) ? { kind: r.link_kind }
+      : r.images > 1 ? { kind: "set", count: r.images }
+      : r.link_kind ? { kind: "link" } : null;
+    if (k) out.set(r.id, k);
+  }
+  return out;
 }
 
 // Each palette colour with the share of the image it covers, from the measurement stored with the read.
@@ -503,12 +544,20 @@ Deno.serve(async (req: Request) => {
 
     switch (b.action) {
       case "projects": {
+        // Pinned projects first, in the order they were pinned (HOP-13); then by most recent note.
         const rows = await sql`
-          select p.id, p.name, count(n.id)::int as notes, max(n.created_at) as last_activity
+          select p.id, p.name, count(n.id)::int as notes, max(n.created_at) as last_activity, p.pinned_at is not null as pinned
           from hopper.projects p join hopper.note_projects np on np.project_id = p.id
           join hopper.notes n on n.id = np.note_id and not n.archived and n.deleted_at is null
-          group by p.id, p.name order by max(n.created_at) desc`;
+          group by p.id, p.name, p.pinned_at order by p.pinned_at nulls last, max(n.created_at) desc`;
         return json({ projects: rows });
+      }
+      case "pin_project": {
+        // Pin or unpin a project pill. Pinning again keeps the original place in the pinned order.
+        const [p] = await sql`update hopper.projects set pinned_at = case when ${Boolean(b.pinned)}::boolean then coalesce(pinned_at, now()) else null end
+                              where id = ${b.project_id}::uuid returning id, pinned_at is not null as pinned`;
+        if (!p) return json({ error: "not found" }, 404);
+        return json({ ok: true, pinned: p.pinned });
       }
       case "topics": {
         const rows = await sql`
@@ -751,10 +800,21 @@ Deno.serve(async (req: Request) => {
         // Only trusted server-side callers (hopper-mcp) may mark a note as saved by Claude; everything else is the app.
         const source = user.email === "service" && b.source === "assistant" ? "assistant" : "app";
         const lock = Boolean(b.lock);
+        // HOP-43: how and on what the note was captured. Only the app's own routes are taken from a signed-in caller.
+        const service = user.email === "service";
+        const route = source === "assistant" ? "mcp"
+          : service ? (b.route === "extension" ? "extension" : "app")
+          : (["share", "new"].includes(b.route) ? b.route : "app");
+        const device = source === "assistant" ? null
+          : deviceFrom(service ? String(b.user_agent ?? "") : (req.headers.get("user-agent") ?? ""), Boolean(b.touch));
+        // hopper-mcp only (HOP-60): projects named exactly, to file the note there instead of filing by closeness.
+        const projectNames: string[] = user.email === "service" && Array.isArray(b.projects) ? b.projects.map(String).slice(0, 10) : [];
+        const chosen = projectNames.length ? await sql`select id, name from hopper.projects where name = any(${projectNames}::text[])` : [];
+        if (chosen.length < new Set(projectNames).size) return json({ error: "unknown project" }, 400);
         const [n] = await sql`
-          insert into hopper.notes (source, title, body, why_saved, is_locked, lock_source, lock_reason, format)
+          insert into hopper.notes (source, title, body, why_saved, is_locked, lock_source, lock_reason, format, capture_route, capture_device)
           values (${source}, ${title}, ${text}, ${why}, ${lock}, ${lock ? "user" : null}, ${lock ? "Locked at capture" : null},
-                  ${(images.length || imageUrls.length) && !url && !text ? "image" : null})
+                  ${(images.length || imageUrls.length) && !url && !text ? "image" : null}, ${route}, ${device})
           returning id, created_at`;
         // Screenshots first, so the first screen is the note's picture on the board.
         let shotResult: any = null;
@@ -790,7 +850,16 @@ Deno.serve(async (req: Request) => {
         }
         try { await linkify(n.id, source === "assistant"); } catch (_) { /* the note is saved either way */ }
         let filed: any[] = [];
-        try { filed = await embedAndFile(n.id, true); } catch (_) { /* filing is best-effort; the note is saved either way */ }
+        if (chosen.length && !lock) {
+          for (const p of chosen) {
+            await sql`insert into hopper.note_projects (note_id, project_id, confidence, confirmed, added_by)
+                      values (${n.id}, ${p.id}, 'high', true, 'assistant') on conflict do nothing`;
+          }
+          filed = chosen.map((p: any) => ({ project: p.name, band: "chosen" }));
+          try { await embedAndFile(n.id, false); } catch (_) { /* search catches up on the next edit */ }
+        } else {
+          try { filed = await embedAndFile(n.id, true); } catch (_) { /* filing is best-effort; the note is saved either way */ }
+        }
         // Claude tagging runs in the background once filing is done (HOP-5); it does nothing while auto_tag is off.
         try { await sql`select hopper.tag_new(${n.id}::uuid)`; } catch (_) { /* the sweep picks it up */ }
         const [{ c: stored }] = await sql`select count(*)::int as c from hopper.attachments where note_id = ${n.id}`;
