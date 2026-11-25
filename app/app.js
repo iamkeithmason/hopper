@@ -338,7 +338,7 @@ async function loadMore() {
           : `${total} note${total === 1 ? "" : "s"} in the Bin. Notes are erased ${bin_days} days after you delete them.`;
       }
     } else if (state.q) {
-      const { notes } = await api({ action: "search", q: state.q });
+      const { notes } = await api({ action: "search", q: state.q, device: device() });
       if (await placeSized($("feed"), notes.map(card), gen)) {
         $("status").textContent = notes.length ? `Closest matches for “${state.q}”` : `Nothing close to “${state.q}”`;
         state.done = true;
@@ -741,7 +741,7 @@ function fromPage(n) {
 }
 
 async function openNote(id, push = true) {
-  if (push) history.pushState({ note: id }, "", `/n/${id}`);
+  if (push) { history.pushState({ note: id }, "", `/n/${id}`); track("note_open", { note_id: id }); } // HOP-63: a tap on a card
   state.note = null; pending = {};
   const body = $("d-body"); body.replaceChildren(el("p", { class: "muted" }, "Loading…"));
   setEditorChrome(null); $("d-meta").textContent = "";

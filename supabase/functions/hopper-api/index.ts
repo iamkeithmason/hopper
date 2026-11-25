@@ -767,6 +767,10 @@ Deno.serve(async (req: Request) => {
           select n.*, h.score from hits h join hopper.note_cards n on n.id = h.note_id
           where not n.is_locked and n.deleted_at is null and (h.bonus is not null or h.sem >= ${SEM_FLOOR})
           order by h.score desc limit 40`;
+        // HOP-63: Keith searched in the app. Only the query's length is kept, never its words.
+        const device = b.device === "phone" || b.device === "desktop" ? b.device : null;
+        await sql`insert into hopper.ui_events (event, actor, device, query_len, result_ids)
+                  values ('search', 'keith', ${device}, ${q.length}, ${sql.array(rows.map((r: any) => r.id))}::uuid[])`.catch(() => {});
         return json({ notes: await cards(rows) });
       }
       case "note": {
@@ -1149,13 +1153,15 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true, filed });
       }
       case "event": {
-        // Silent navigation count (hopper.ui_events), for deciding where the project pills live.
-        const EVENTS = ["open", "pill", "sheet", "sheet_pick", "topic"];
+        // Silent navigation count (hopper.ui_events), for deciding where the project pills live, and (HOP-63)
+        // which notes Keith opens. Searches are logged by the search action itself.
+        const EVENTS = ["open", "pill", "sheet", "sheet_pick", "topic", "note_open"];
         if (!EVENTS.includes(b.event)) return json({ error: "bad event" }, 400);
         const device = b.device === "phone" || b.device === "desktop" ? b.device : null;
         const topic = typeof b.topic === "string" ? b.topic.slice(0, 80) : null;
-        await sql`insert into hopper.ui_events (event, project_id, topic, device)
-                  values (${b.event}, ${b.project_id ?? null}::uuid, ${topic}, ${device})`;
+        const noteId = typeof b.note_id === "string" && /^[0-9a-f-]{36}$/i.test(b.note_id) ? b.note_id : null;
+        await sql`insert into hopper.ui_events (event, actor, project_id, topic, device, note_id)
+                  values (${b.event}, 'keith', ${b.project_id ?? null}::uuid, ${topic}, ${device}, ${noteId}::uuid)`;
         return json({ ok: true });
       }
       default:

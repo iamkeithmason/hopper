@@ -825,6 +825,30 @@ const HANDLERS: Record<string, (a: any) => Promise<any[]>> = {
   list_benchmarks: listBenchmarks,
 };
 
+// HOP-63: what Claude pulls up through the MCP, in hopper.ui_events with actor 'claude'. Opening a note or reference is
+// note_open, a search keeps its query's length and the notes it returned (never the query's words), and any other
+// tool is mcp_call. Logging never fails a tool call.
+const OPENS = ["get_note", "get_reference"];
+const SEARCHES = ["search_notes", "search_references"];
+async function logCall(tool: string, a: any, content: any[]) {
+  try {
+    const event = OPENS.includes(tool) ? "note_open" : SEARCHES.includes(tool) ? "search" : "mcp_call";
+    const noteId = event === "note_open" && UUID.test(String(a?.id ?? "")) ? String(a.id) : null;
+    let ids: string[] = [];
+    if (event === "search") {
+      const found = content.filter((c) => c?.type === "text").map((c) => String(c.text)).join("\n")
+        .match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) ?? [];
+      ids = [...new Set(found.map((x) => x.toLowerCase()))].slice(0, 100);
+    }
+    const q = typeof a?.query === "string" ? a.query.trim() : "";
+    await sql`insert into hopper.ui_events (event, actor, tool, note_id, query_len, result_ids)
+              select ${event}, 'claude', ${tool},
+                     (select id from hopper.notes where id = ${noteId}::uuid),
+                     ${event === "search" ? q.length : null}::int,
+                     ${event === "search" ? sql`array(select id from hopper.notes where id = any(${sql.array(ids)}::uuid[]))` : sql`null::uuid[]`}`;
+  } catch (_) { /* never fail the call over a log line */ }
+}
+
 async function handle(msg: any) {
   const { id, method, params } = msg ?? {};
   const ok = (result: unknown) => ({ jsonrpc: "2.0", id, result });
@@ -836,7 +860,7 @@ async function handle(msg: any) {
       return ok({
         protocolVersion: typeof params?.protocolVersion === "string" ? params.protocolVersion : PROTOCOL,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "hopper", title: "Hopper", version: "1.12.0" },
+        serverInfo: { name: "hopper", title: "Hopper", version: "1.13.0" },
         instructions: INSTRUCTIONS,
       });
     case "ping":
@@ -847,7 +871,10 @@ async function handle(msg: any) {
       const fn = HANDLERS[params?.name];
       if (!fn) return err(-32602, `Unknown tool: ${params?.name}`);
       try {
-        return ok({ content: await fn(params?.arguments ?? {}) });
+        const args = params?.arguments ?? {};
+        const content = await fn(args);
+        await logCall(params.name, args, content);
+        return ok({ content });
       } catch (e) {
         return ok({ content: [text(`Hopper error: ${String(e).slice(0, 300)}`)], isError: true });
       }
