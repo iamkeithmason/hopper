@@ -23,6 +23,8 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
 // "refetch" { id } reads a note's page again, plainly and then in a real browser (HOP-50); "add_images" { id, images }
 // adds pictures to a saved note. Captures whose page refuses the fetch get the same browser rescue in the background.
+// "remove_image" / "replace_image" { id, image_id, image? } change Keith's own pictures on a note (HOP-54).
+// Cards and "note" carry display_title where the title is missing or a file or site name (HOP-36).
 // "measure" { id, url? } measures a captured page's motion and type (HOP-55, 56, 57); desktop captures do it in the background.
 
 const URL_ = Deno.env.get("SUPABASE_URL")!;
@@ -598,11 +600,44 @@ function deviceFrom(ua: string, touch: boolean): string | null {
 const OWN_CAPTURES = ["app", "notion-clip", "assistant"];
 const canUnlock = (n: any) => n.lock_source === "user" || (OWN_CAPTURES.includes(n.source) && ["classifier", "pattern"].includes(n.lock_source));
 
+// HOP-36: a readable display title for notes with no title, or a file or site name for one. The stored title is never
+// changed (Keith chose this over overwriting, 25 Nov): the display title is worked out on read, from the note's first
+// line when it reads as a heading (on its own line above a gap, or the whole note when short), else from its summary.
+const JUNK_TITLE = /^(screen ?shot\b.*|img[_ -]?\d.*|image\d*|photo\d*|untitled|pinterest|take a look!?\s*📌?|\d{5,}.*|.*\.(png|jpe?g|webp|gif|heic))$/i;
+const badTitle = (t: string | null | undefined) => !t?.trim() || JUNK_TITLE.test(t.trim());
+function shorten(s: string, max = 64) {
+  s = s.replace(/\s+/g, " ").trim().replace(/[.,;:]+$/, "");
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  return cut.slice(0, Math.max(cut.lastIndexOf(" "), 30)).replace(/[\s.,;:–(-]+$/, "") + "…";
+}
+function displayTitle(title: string | null, body: string | null, summary: string | null, format?: string | null): string | null {
+  if (!badTitle(title)) return null;
+  const text = (body ?? "").trim();
+  const lines = text.split("\n").map((l) => l.trim());
+  const first = lines[0] ?? "";
+  const heading = first && !badTitle(first) && first.length <= 60 && !/^https?:\/\//i.test(first) && !/^[“"'«]/.test(first)
+    && (lines.length === 1 || lines[1] === "");
+  // Lists read better by what they are ("Short grocery list") than by their first item.
+  if (heading && format !== "list") return first.replace(/[:.]+$/, "");
+  const s = (summary ?? "").trim();
+  if (s) {
+    const clause = s.split(/(?<=[a-z0-9)”"])[.;](?:\s|$)/i)[0]
+      .replace(/^(saved |a )?(pinterest (pin|link)|link|bookmark|screenshot|page)( from keith)?,? (to|of|with|showing|on) (an? |the )?/i, "");
+    return shorten(clause).replace(/^./, (c) => c.toUpperCase());
+  }
+  return first && !badTitle(first) ? shorten(first) : null;
+}
+
 // Card fields for lists. Locked notes are reduced to title, date and the lock.
 // Binned notes also carry deleted_at and erases_at (the earliest time the nightly job erases them).
 async function cards(rows: any[]) {
   const urls = await signed(rows.filter((r) => !r.is_locked).map((r) => r.image_path));
-  const media = await mediaKinds(rows.filter((r) => !r.is_locked).map((r) => r.id));
+  const open = rows.filter((r) => !r.is_locked).map((r) => r.id);
+  const media = await mediaKinds(open);
+  // HOP-36: the note's first line and summary, for a display title where the title is missing or a file name.
+  const heads = new Map((open.length ? await sql`select id, left(body, 300) as head, summary from hopper.notes
+                          where id = any(${sql.array(open)}::uuid[]) and not is_locked` : []).map((h: any) => [h.id, h]));
   return rows.map((r) => {
     const bin = r.deleted_at ? { deleted_at: r.deleted_at, erases_at: erasesAt(r.deleted_at) } : {};
     return r.is_locked
@@ -613,6 +648,7 @@ async function cards(rows: any[]) {
         host: r.link_url ? String(r.link_url).replace(/^https?:\/\/(www\.)?/, "").split("/")[0] : null,
         projects: r.projects ?? [], score: r.score ?? undefined, pinned: !!r.pinned, color: r.keep_color ?? null,
         media: media.get(r.id) ?? null, ...bin,
+        display_title: displayTitle(r.title, heads.get(r.id)?.head ?? null, heads.get(r.id)?.summary ?? null, r.format),
       };
   });
 }
@@ -802,7 +838,8 @@ Deno.serve(async (req: Request) => {
           order by e2.embedding <=> e1.embedding limit 8`;
         return json({
           note: {
-            id: n.id, locked: false, title: n.title, body: n.body, summary: n.summary, format: n.format,
+            id: n.id, locked: false, title: n.title, display_title: displayTitle(n.title, n.body, n.summary, n.format),
+            body: n.body, summary: n.summary, format: n.format,
             list_items: n.list_items, why_saved: n.why_saved, created_at: n.created_at, source: n.source,
             pinned: n.pinned, archived: n.archived, color: n.keep_color, edited_at: n.edited_at, ...bin,
             aesthetics: n.aesthetics ?? [],

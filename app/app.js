@@ -216,11 +216,14 @@ function card(n) {
   if (n.locked) return el("div", { class: "card locked", "data-id": n.id, onclick: () => openNote(n.id) }, "🔒 ", fmtDate(n.created_at), n.title ? el("div", {}, n.title) : null, erase);
   const projects = (n.projects || []).join(" · ");
   // Image cards lead with the picture and one line: the title, or else the note's first line.
-  const line = n.title || (n.excerpt || "").split("\n").find((s) => s.trim()) || "";
+  // HOP-36: display_title (from hopper-api) stands in for a missing or file-like title. Text cards with no title at
+  // all stay as Keep shows them, led by their text; a file or site name as a title is replaced.
+  const line = n.display_title || n.title || (n.excerpt || "").split("\n").find((s) => s.trim()) || "";
+  const shownTitle = n.title ? (n.display_title || n.title) : null;
   const text = n.image
     ? (line ? el("div", { class: "c-text one" }, el("p", { class: "c-line" }, line)) : null)
-    : ((n.title || n.excerpt) ? el("div", { class: "c-text" },
-        n.title ? el("p", { class: "c-title" }, n.title) : null,
+    : ((shownTitle || n.excerpt) ? el("div", { class: "c-text" },
+        shownTitle ? el("p", { class: "c-title" }, shownTitle) : null,
         n.excerpt ? el("div", { class: "c-excerpt" }, n.excerpt) : null) : null);
   // Type, site, projects and date live in the hover overlay (desktop only), to fit more on the board.
   // On image cards it covers just the picture, so the caption stays readable.
@@ -408,7 +411,9 @@ async function flushSave() {
 }
 function cardFromNote(n) {
   const host = n.links?.[0]?.url ? n.links[0].url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0] : null;
-  return { id: n.id, locked: false, title: n.title, excerpt: (n.body || n.summary || "").slice(0, 220), format: n.format, created_at: n.created_at,
+  // The display title holds only while the title is as it was when the note opened.
+  const display_title = (n.title || "") === (n.title0 ?? "") ? n.display_title ?? null : null;
+  return { id: n.id, locked: false, title: n.title, display_title, excerpt: (n.body || n.summary || "").slice(0, 220), format: n.format, created_at: n.created_at,
     image: n.images?.[0]?.url ?? n.links?.[0]?.thumbnail_url ?? null, host, projects: (n.tags || []).filter((t) => t.kind === "project").map((t) => t.name), pinned: n.pinned, color: n.color };
 }
 
@@ -822,7 +827,7 @@ async function openNote(id, push = true) {
   $("detail").hidden = false; document.body.style.overflow = "hidden";
   try {
     const { note: n, related } = await api({ action: "note", id });
-    state.note = n; state.tagEdit = false;
+    state.note = n; state.tagEdit = false; n.title0 = n.title || "";
     setEditorChrome(n);
     const binBar = n.deleted_at ? binBanner(n) : null;
     if (n.locked) {
@@ -835,7 +840,7 @@ async function openNote(id, push = true) {
       ].filter(Boolean));
       return;
     }
-    const title = el("textarea", { class: "quiet title", rows: 1, placeholder: "Title" });
+    const title = el("textarea", { class: "quiet title", rows: 1, placeholder: (!n.title && n.display_title) || "Title" });
     title.value = n.title || "";
     title.addEventListener("input", () => { autosize(title); queueSave({ title: title.value }); });
     title.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); bodyBox.focus(); } });
