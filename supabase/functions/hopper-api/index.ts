@@ -21,6 +21,8 @@ import { decodeBase64 } from "jsr:@std/encoding@1/base64";
 // "note" also returns the note's aesthetic tags and, for images judged design references, their design read.
 // Bin: "delete" moves a note to the Bin (deleted_at); the nightly hopper-bin job erases it after BIN_DAYS.
 // Binned notes are hidden from the feed, search, related notes, projects and the AI, and can't be edited until restored.
+// "refetch" { id } reads a note's page again, plainly and then in a real browser (HOP-50); "add_images" { id, images }
+// adds pictures to a saved note. Captures whose page refuses the fetch get the same browser rescue in the background.
 
 const URL_ = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
