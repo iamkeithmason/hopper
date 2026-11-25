@@ -19,6 +19,8 @@
 -- 20261125181300_hopper_capture_route (run by hand in the SQL editor, so not in schema_migrations): notes.capture_route and notes.capture_device,
 -- hopper.route_for_source(), the notes_capture_route insert trigger, a backfill of capture_route from source,
 -- and the view hopper.capture_counts_weekly.
+-- 20261125191500_hopper_transcripts (HOP-61): note_links.transcript_summary, transcript_language, transcript_source,
+-- transcript_at and transcript_model, and the notes_clear_ai_on_lock trigger (locking drops video summaries).
 --
 -- Extensions used (in schema extensions): vector, pg_net, pg_cron.
 -- Grants: every table and view here has access revoked from public, anon and authenticated.
@@ -111,10 +113,16 @@ create table hopper.note_links (
   videos_on_page integer,
   captured_on date,
   layout_read jsonb,                      -- the page read (hopper-design): first screen, structure, width, image treatment, moves, strengths, gaps
+  transcript_summary text,                -- HOP-61: what the video says (hopper-transcript, Haiku): a paragraph, then "- " key points
+  transcript_language text,
+  transcript_source text,                 -- extension (read off the page on save) or assistant (hopper-mcp add_transcript)
+  transcript_at timestamp with time zone,
+  transcript_model text,
   constraint note_links_pkey primary key (id),
   constraint note_links_note_id_url_key unique (note_id, url),
   constraint note_links_fetch_status_check check (fetch_status in ('ok','dead','blocked','private','timeout','error','skipped')),
-  constraint note_links_kind_check check (kind in ('article','video','audio','image','product','pdf','social','other'))
+  constraint note_links_kind_check check (kind in ('article','video','audio','image','product','pdf','social','other')),
+  constraint note_links_transcript_source_check check (transcript_source in ('extension','assistant'))
 );
 
 create table hopper.note_embeddings (
@@ -296,6 +304,20 @@ create or replace view hopper.notes_for_ai as
  where is_locked = false;
 
 -- Functions
+
+-- HOP-61: locking a note drops its video summaries, as it drops the note's own summary and embedding.
+create or replace function hopper.clear_ai_on_lock() returns trigger
+  language plpgsql set search_path to ''
+as $$
+begin
+  if new.is_locked and not old.is_locked then
+    update hopper.note_links set transcript_summary = null, transcript_model = null where note_id = new.id;
+  end if;
+  return new;
+end
+$$;
+create trigger notes_clear_ai_on_lock after update of is_locked on hopper.notes
+  for each row execute function hopper.clear_ai_on_lock();
 
 -- Calls a hopper-* edge function from the database via pg_net, using the Vault secret.
 create or replace function hopper.call_fn(p_slug text, p_body jsonb, p_timeout_ms integer default 150000)

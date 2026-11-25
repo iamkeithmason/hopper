@@ -5,7 +5,8 @@ import postgres from "npm:postgres@3.4.4";
 // The extension holds a capture-only token (Vault 'hopper_capture_token'; its sha256 in hopper.settings
 // 'capture_token_sha256'). This function checks it and passes captures on to hopper-api unchanged, so the
 // token can save notes but never read them. hopper-api does all the saving, linking, embedding and filing.
-// Body: { action: "ping" } to test the token, or { action: "capture", title?, text?, url?, note?, images?, lock? }.
+// Body: { action: "ping" } to test the token, or { action: "capture", title?, text?, url?, note?, images?, lock?, transcript? }.
+// transcript (HOP-61): a YouTube video's transcript, read off the page by the extension.
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare: false, max: 2 });
 const API = `${Deno.env.get("SUPABASE_URL")}/functions/v1/hopper-api`;
@@ -32,12 +33,12 @@ Deno.serve(async (req: Request) => {
 
     // The invoke token lets hopper-api treat this as a trusted server-side caller; it never leaves the server.
     const [{ tok }] = await sql`select decrypted_secret as tok from vault.decrypted_secrets where name = 'hopper_invoke_token'`;
-    const { title, text, url, note, images, lock } = body;
+    const { title, text, url, note, images, lock, transcript } = body;
     const r = await fetch(API, {
       method: "POST",
       headers: { "content-type": "application/json", "x-hopper-token": tok },
       // HOP-43: hopper-api records the route and the device, from the browser's user agent.
-      body: JSON.stringify({ action: "capture", title, text, url, note, images, lock,
+      body: JSON.stringify({ action: "capture", title, text, url, note, images, lock, transcript,
         route: "extension", user_agent: req.headers.get("user-agent") ?? "" }),
     });
     return new Response(await r.text(), { status: r.status, headers: { "content-type": "application/json" } });
