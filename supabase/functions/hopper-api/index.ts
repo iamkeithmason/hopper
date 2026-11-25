@@ -445,6 +445,7 @@ const canUnlock = (n: any) => n.lock_source === "user" || (OWN_CAPTURES.includes
 // Binned notes also carry deleted_at and erases_at (the earliest time the nightly job erases them).
 async function cards(rows: any[]) {
   const urls = await signed(rows.filter((r) => !r.is_locked).map((r) => r.image_path));
+  const media = await mediaKinds(rows.filter((r) => !r.is_locked).map((r) => r.id));
   return rows.map((r) => {
     const bin = r.deleted_at ? { deleted_at: r.deleted_at, erases_at: erasesAt(r.deleted_at) } : {};
     return r.is_locked
@@ -453,9 +454,31 @@ async function cards(rows: any[]) {
         id: r.id, locked: false, title: r.title, excerpt: r.excerpt, format: r.format, created_at: r.created_at,
         image: r.image_path ? urls[r.image_path] ?? null : (r.link_thumb ?? null),
         host: r.link_url ? String(r.link_url).replace(/^https?:\/\/(www\.)?/, "").split("/")[0] : null,
-        projects: r.projects ?? [], score: r.score ?? undefined, pinned: !!r.pinned, color: r.keep_color ?? null, ...bin,
+        projects: r.projects ?? [], score: r.score ?? undefined, pinned: !!r.pinned, color: r.keep_color ?? null,
+        media: media.get(r.id) ?? null, ...bin,
       };
   });
+}
+
+// What each card's thumbnail holds, for the small icon in its corner (HOP-44), by priority: a video, audio or PDF link,
+// then a set of two or more pictures (with the count), then any other link. Page screenshots don't count as pictures.
+async function mediaKinds(ids: string[]) {
+  const out = new Map<string, { kind: string; count?: number }>();
+  if (!ids.length) return out;
+  const rows = await sql`
+    select n.id,
+      (select count(*)::int from hopper.attachments a where a.note_id = n.id and a.storage_path is not null
+         and (a.image_role is null or a.image_role = 'figure')) as images,
+      (select l.kind from hopper.note_links l where l.note_id = n.id
+         order by case l.kind when 'video' then 0 when 'audio' then 1 when 'pdf' then 2 else 3 end limit 1) as link_kind
+    from unnest(${ids}::uuid[]) as n(id)`;
+  for (const r of rows) {
+    const k = ["video", "audio", "pdf"].includes(r.link_kind) ? { kind: r.link_kind }
+      : r.images > 1 ? { kind: "set", count: r.images }
+      : r.link_kind ? { kind: "link" } : null;
+    if (k) out.set(r.id, k);
+  }
+  return out;
 }
 
 // Each palette colour with the share of the image it covers, from the measurement stored with the read.

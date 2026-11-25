@@ -13,13 +13,14 @@ Live at <https://hopper-keith.vercel.app> (sign-in is limited to one email addre
 | `supabase/functions/` | Edge functions (Deno) for the Supabase project. |
 | `supabase/schema.sql` | Reference snapshot of the `hopper` schema. |
 | `tests/feed_check.py` | Feed smoke test: the real app against a fake API in headless Chrome. Checks cards never move, scrolling keeps loading on tall screens, and loading stops at the end. Run `python3 tests/feed_check.py` (needs Playwright and Chrome) before pushing feed or layout changes. |
+| `tests/overflow_check.py` | Long-address check (HOP-41): a shared link with tracking parameters, untitled links on an open note and a long-address card must never widen the page, at phone and desktop widths. Run `python3 tests/overflow_check.py` before pushing layout changes. |
 | `tests/contrast_check.py` | WCAG AA audit: every Keep colour and none, light and dark, cards, header and the open note; every visible text and placeholder at 4.5:1, chip outlines and icons at 3:1. Run before pushing colour or style changes. |
 
 ### Edge functions
 
 | Function | Does |
 |---|---|
-| `hopper-api` | Everything the app calls: projects, feed, search by meaning, note detail, editing, tags, lock, capture, delete, and `screenshot` (screenshots of a note's page, or `{ url }` for another page of the same site, added to the note as a link). Capture also takes `image_urls` and a `screenshot` flag. |
+| `hopper-api` | Everything the app calls: projects, feed (each card carries `media`, what its picture holds, for the corner icon), search by meaning, note detail, editing, tags, lock, capture, delete, and `screenshot` (screenshots of a note's page, or `{ url }` for another page of the same site, added to the note as a link). Capture also takes `image_urls` and a `screenshot` flag. |
 | `hopper-tag` | Tags notes with Claude (projects, topics, people, works, format) and locks notes the classifier calls sensitive. Reads unlocked notes only. |
 | `hopper-fetch` | Fetches page titles, text and thumbnails for links in notes. |
 | `hopper-embed` | Embeds notes with gte-small (384 dimensions) for search and related notes; `refresh` re-embeds after a design read. |

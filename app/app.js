@@ -176,10 +176,20 @@ function card(n) {
     projects ? el("b", {}, projects) : null,
     el("span", {}, fmtDate(n.created_at)));
   const media = n.image ? el("div", { class: "c-media" },
-    el("img", { src: n.image, alt: "", onerror: (e) => { e.target.closest(".card")?.classList.remove("has-media"); e.target.parentNode.replaceWith(hover); } }), hover) : null;
+    el("img", { src: n.image, alt: "", onerror: (e) => { e.target.closest(".card")?.classList.remove("has-media"); e.target.parentNode.replaceWith(hover); } }),
+    mediaMark(n.media), hover) : null;
   return el("div", { class: `card ${n.format || ""} ${colourClass(n.color)}${media ? " has-media" : ""}`, "data-id": n.id, onclick: () => openNote(n.id) },
     n.pinned ? (() => { const s = icon("pinned"); s.classList.add("pin-mark"); return s; })() : null,
     media, text, media ? null : hover, erase);
+}
+
+// HOP-44: one small icon in the corner of a card's picture saying what the note holds (video, audio, PDF, a set of
+// pictures with its count, or a link). hopper-api picks the one by priority.
+const MEDIA_LABEL = { video: "Video", audio: "Audio", pdf: "PDF", set: "Pictures", link: "Link" };
+function mediaMark(m) {
+  if (!m || !MEDIA_LABEL[m.kind]) return null;
+  const label = m.kind === "set" ? `${m.count} pictures` : MEDIA_LABEL[m.kind];
+  return el("span", { class: `c-kind k-${m.kind}`, title: label, "aria-label": label }, icon(`m-${m.kind}`), m.kind === "set" ? el("b", {}, String(m.count)) : null);
 }
 
 // ---------- masonry ----------
@@ -430,6 +440,16 @@ async function addTag(kind, name) {
 
 // What Hopper fetched from a note's link, set apart from Keith's own note:
 // a player for YouTube and Vimeo, otherwise the page's picture; then its title, site and description.
+// A long address as a reader needs it: the site and the start of the path, no query string. The full address stays
+// on the link itself (tap to open, long-press to copy) and in its tooltip.
+function shortUrl(u, max = 48) {
+  try {
+    const x = new URL(u), path = x.pathname.replace(/\/+$/, "");
+    const s = x.hostname.replace(/^www\./, "") + (path && path !== "/" ? path : "");
+    return s.length > max ? s.slice(0, max - 1) + "…" : s;
+  } catch { return u.length > max ? u.slice(0, max - 1) + "…" : u; }
+}
+
 const VIDEO = [
   [/^https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/)|youtu\.be\/)([\w-]{11})/i, (id) => `https://www.youtube-nocookie.com/embed/${id}`],
   [/^https?:\/\/(?:www\.)?vimeo\.com\/(\d+)/i, (id) => `https://player.vimeo.com/video/${id}`],
@@ -614,10 +634,10 @@ function fromPage(n) {
   return el("section", { class: "from-page" },
     el("div", { class: "divider" }, "From the page"),
     media,
-    el("a", { class: "p-link", href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.page_title || l.url, " ↗"),
+    el("a", { class: "p-link", href: l.url, title: l.url, target: "_blank", rel: "noopener noreferrer" }, l.page_title || shortUrl(l.url), " ↗"),
     el("span", { class: "p-host" }, host),
     desc ? el("p", { class: "p-desc" }, String(desc).slice(0, 600)) : null,
-    ...n.links.slice(1).map((x) => el("a", { class: "p-link", href: x.url, target: "_blank", rel: "noopener noreferrer" }, x.page_title || x.url, " ↗")));
+    ...n.links.slice(1).map((x) => el("a", { class: "p-link", href: x.url, title: x.url, target: "_blank", rel: "noopener noreferrer" }, x.page_title || shortUrl(x.url), " ↗")));
 }
 
 async function openNote(id, push = true) {
@@ -888,7 +908,7 @@ function renderCapturePreview() {
   const hasText = !!(s && (s.url || s.text || (state.capShared && s.title)));
   pv.replaceChildren(...[
     thumbs.length ? el("div", { class: "p-imgs" }, ...thumbs) : null,
-    hasText ? el("div", { class: "p-text" }, el("div", { class: "p-title" }, s.title || host || (thumbs.length ? "Shared image" : "Shared text")), el("div", { class: "p-sub" }, s.url || s.text)) : null,
+    hasText ? el("div", { class: "p-text" }, el("div", { class: "p-title" }, s.title || host || (thumbs.length ? "Shared image" : "Shared text")), el("div", { class: "p-sub", title: s.url || "" }, s.url ? shortUrl(s.url, 80) : s.text)) : null,
   ].filter(Boolean));
   pv.hidden = !thumbs.length && !hasText;
 }
