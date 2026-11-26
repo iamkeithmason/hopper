@@ -9,7 +9,10 @@
   --fs-caption: 12px; --lh-caption: 16px; --fs-label: 13px; --lh-label: 18px; --fs-body: 15px; --lh-body: 22px;
   --fs-reading: 17px; --lh-reading: 26px; --fs-title: 21px; --lh-title: 28px; --fs-display: 27px; --lh-display: 32px;
   --caps: .06em;
-  --dur-press: 120ms; --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --dur-press: 120ms;
+  /* Sheets and menus: enter on the sheet curve, leave a little faster; menus grow from their button. */
+  --dur-enter: 280ms; --dur-exit: 200ms; --dur-pop-in: 150ms; --dur-pop-out: 110ms;
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1); --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -20,13 +23,13 @@ html, body { margin: 0; background: var(--bg); color: var(--ink); }
 body { font: var(--fs-body)/var(--lh-body) -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
 [hidden] { display: none !important; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
-/* Press: a tap shows at once. Buttons shrink to 0.97; wide rows and cards to 0.99, because scale is relative to size.
+/* Press: a tap shows at once. Buttons shrink to 0.95; wide rows and cards to 0.98, because scale is relative to size.
    The separate scale property leaves transform free for the bar and toast. No movement under reduced motion. */
 button, .card, .lock-toggle { -webkit-tap-highlight-color: transparent; }
 @media (prefers-reduced-motion: no-preference) {
   button, .card, .lock-toggle { transition: scale var(--dur-press) var(--ease-out); }
-  :where(button):active:not(:disabled), .lock-toggle:active { scale: 0.97; }
-  .card:active, .lb-pill:active, .ns-row:active, .menu button:active, .menu-pop button:active, .tag-list button:active, .projects-grid button:active { scale: 0.99; }
+  :where(button):active:not(:disabled), .lock-toggle:active { scale: 0.95; }
+  .card:active, .lb-pill:active, .ns-row:active, .menu button:active, .menu-pop button:active, .tag-list button:active, .projects-grid button:active { scale: 0.98; }
 }
 input, textarea { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; }
 textarea { resize: vertical; }
@@ -107,6 +110,31 @@ main { padding: 6px 8px 40px; }
 @media (hover: hover) { .card:hover .hover { opacity: 1; } }
 
 /* overlays and sheets */
+/* Motion: a sheet slides up from the bottom edge as its backdrop fades in, and slides back down faster when it closes.
+   Opening uses @starting-style; closing keeps the overlay displayed until the slide ends (display ... allow-discrete),
+   so app.js still just sets hidden. Menus grow from their button. With reduced motion only the fade stays. */
+.overlay:not([hidden]), .pop:not([hidden]), .menu:not([hidden]) { opacity: 1; }
+.overlay[hidden], .pop[hidden], .menu[hidden] { opacity: 0; }
+@starting-style { .overlay:not([hidden]), .pop:not([hidden]), .menu:not([hidden]) { opacity: 0; } }
+.overlay:not([hidden]) { transition: opacity var(--dur-enter) var(--ease-out), display var(--dur-enter) var(--ease-out) allow-discrete; }
+.overlay[hidden] { transition: opacity var(--dur-exit) var(--ease-out), display var(--dur-exit) var(--ease-out) allow-discrete; }
+.pop:not([hidden]), .menu:not([hidden]) { transition: opacity var(--dur-pop-in) var(--ease-out), display var(--dur-pop-in) var(--ease-out) allow-discrete; }
+.pop[hidden], .menu[hidden] { transition: opacity var(--dur-pop-out) var(--ease-out), display var(--dur-pop-out) var(--ease-out) allow-discrete; }
+@media (prefers-reduced-motion: no-preference) {
+  .overlay > .sheet { translate: 0 0; }
+  .overlay[hidden] > .sheet { translate: 0 100%; transition: translate var(--dur-exit) var(--ease-out); }
+  .overlay:not([hidden]) > .sheet { transition: translate var(--dur-enter) var(--ease-sheet); }
+  @starting-style { .overlay:not([hidden]) > .sheet { translate: 0 100%; } }
+  .menu-pop { transform-origin: bottom right; } .menu, .menu-pop { transform-origin: top right; }
+  .pop:not([hidden]), .menu:not([hidden]) { scale: 1; transition: opacity var(--dur-pop-in) var(--ease-out), scale var(--dur-pop-in) var(--ease-out), display var(--dur-pop-in) var(--ease-out) allow-discrete; }
+  .pop[hidden], .menu[hidden] { scale: 0.95; transition: opacity var(--dur-pop-out) var(--ease-out), scale var(--dur-pop-out) var(--ease-out), display var(--dur-pop-out) var(--ease-out) allow-discrete; }
+  @starting-style { .pop:not([hidden]), .menu:not([hidden]) { scale: 0.95; } }
+}
+@media (prefers-reduced-motion: no-preference) and (min-width: 760px) {
+  /* centred on a computer: a short rise, not the whole height */
+  .overlay[hidden] > .sheet { translate: 0 24px; }
+  @starting-style { .overlay:not([hidden]) > .sheet { translate: 0 24px; } }
+}
 .overlay { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.4); display: flex; align-items: flex-end; justify-content: center; }
 @media (min-width: 760px) { .overlay { align-items: center; padding: 30px; } }
 .sheet { background: var(--bg); width: 100%; max-width: 760px; border-radius: 18px 18px 0 0; padding: 14px 18px calc(env(safe-area-inset-bottom) + 18px); max-height: 92vh; overflow-y: auto; }
@@ -401,6 +429,7 @@ button.chip { border: 0; font: inherit; color: inherit; }
   .d-body { padding-top: 18px; }
   #d-meta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .menu-pop { top: auto; bottom: calc(env(safe-area-inset-bottom) + 62px); display: flex; flex-direction: column-reverse; }
+  .menu-pop { transform-origin: bottom right; }
 
   /* capture: Save first, under the thumb; Cancel at the far end */
   .capture .actions #capture-save { order: -3; height: 48px; border-radius: 24px; padding: 0 26px; }
