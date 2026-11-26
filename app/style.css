@@ -1,6 +1,8 @@
 :root {
   --bg: #f7f4ee; --card: #fff; --ink: #1c1b19; --line: #e4dfd5; --accent: #d6784a;
   --radius: 14px; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
+  /* Motion (design guardrails): press feedback. See the press rules after the base styles. */
+  --dur-press: 120ms; --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -11,9 +13,19 @@ html, body { margin: 0; background: var(--bg); color: var(--ink); }
 body { font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
 [hidden] { display: none !important; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+/* Press: a tap shows at once. Buttons shrink to 0.97; wide rows and cards to 0.99, because scale is relative to size.
+   The separate scale property leaves transform free for the bar and toast. No movement under reduced motion. */
+button, .card, .lock-toggle { -webkit-tap-highlight-color: transparent; }
+@media (prefers-reduced-motion: no-preference) {
+  button, .card, .lock-toggle { transition: scale var(--dur-press) var(--ease-out); }
+  :where(button):active:not(:disabled), .lock-toggle:active { scale: 0.97; }
+  .card:active, .lb-pill:active, .ns-row:active, .menu button:active, .menu-pop button:active, .tag-list button:active, .projects-grid button:active { scale: 0.99; }
+}
 input, textarea { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; }
 textarea { resize: vertical; }
 .muted { color: var(--soft); } .center { text-align: center; }
+/* An icon inside text takes the text's size and colour, sitting on its baseline like a letter. */
+.t-icon { width: 1em; height: 1em; fill: currentColor; vertical-align: -0.125em; margin-right: 0.3em; }
 .primary { background: var(--ink); color: var(--bg); border-radius: 10px; padding: 10px 18px; font-weight: 600; }
 
 /* sign in */
@@ -39,7 +51,7 @@ header#top.hide { transform: translateY(-100%); }
 /* Wide screens: search sits at a comfortable width and widens while you use it. */
 #q { border-radius: 22px; padding: 10px 16px; background: var(--card); }
 .icon-btn { width: 40px; height: 40px; border-radius: 20px; font-size: 20px; color: var(--mid); flex: none; }
-.icon-btn:hover { background: var(--chip); }
+@media (hover: hover) and (pointer: fine) { .icon-btn:hover { background: var(--chip); } }
 .pills { display: flex; gap: 18px; overflow-x: auto; scrollbar-width: none; padding: 10px 4px 4px; white-space: nowrap; }
 .pills::-webkit-scrollbar { display: none; }
 .pills button { padding: 4px 0; color: var(--mid); font-weight: 500; border-bottom: 2px solid transparent; }
@@ -135,7 +147,8 @@ main { padding: 6px 8px 40px; }
 .projects-grid b { display: block; }
 
 .menu { position: fixed; top: calc(env(safe-area-inset-top) + 56px); right: 12px; background: var(--card); border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); z-index: 20; display: grid; min-width: 160px; overflow: hidden; }
-.menu button { padding: 12px 16px; text-align: left; } .menu button:hover { background: var(--chip); }
+.menu button { padding: 12px 16px; text-align: left; }
+@media (hover: hover) and (pointer: fine) { .menu button:hover { background: var(--chip); } }
 .toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 24px); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 18px; border-radius: 22px; z-index: 50; font-weight: 500; display: flex; align-items: center; gap: 14px; max-width: calc(100vw - 32px); width: max-content; }
 .toast-act { background: transparent; color: var(--bg); border: 1px solid currentColor; border-radius: 16px; padding: 6px 12px; margin: -4px -8px -4px 0; font: inherit; cursor: pointer; white-space: nowrap; }
 
@@ -163,7 +176,7 @@ main { padding: 6px 8px 40px; }
 .swatch.none { background: var(--bg); border: 2px solid var(--line); font-size: 15px; color: var(--soft); }
 .menu-pop { right: 12px; top: 54px; bottom: auto; display: grid; min-width: 210px; overflow: hidden; }
 .menu-pop button { padding: 13px 16px; text-align: left; }
-.menu-pop button:hover { background: var(--chip); }
+@media (hover: hover) and (pointer: fine) { .menu-pop button:hover { background: var(--chip); } }
 .danger { color: #c4462f; }
 @media (prefers-color-scheme: dark) { .danger, .view-banner button.danger { color: #f08a74; } }
 .icon-btn.on { color: var(--ink); background: var(--chip); }
@@ -190,7 +203,7 @@ button.chip { border: 0; font: inherit; color: inherit; }
 .palette { margin: 0 0 12px; }
 .palette-strip { display: flex; height: 48px; border-radius: 10px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--line); }
 .strip-sw { flex-basis: 0; min-width: 10px; border: 0; padding: 0; margin: 0; cursor: copy; border-radius: 0; }
-.strip-sw:hover { box-shadow: inset 0 -4px 0 rgba(255,255,255,.55), inset 0 4px 0 rgba(0,0,0,.18); }
+@media (hover: hover) and (pointer: fine) { .strip-sw:hover { box-shadow: inset 0 -4px 0 rgba(255,255,255,.55), inset 0 4px 0 rgba(0,0,0,.18); } }
 .strip-sw:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
 .strip-label { min-height: 1.4em; margin: 6px 0 0; font-size: 13px; color: var(--mid); }
 .borrow { border-left: 3px solid var(--accent); padding: 4px 12px; margin: 0 0 10px; }
@@ -229,7 +242,7 @@ button.chip { border: 0; font: inherit; color: inherit; }
 .tag-list { display: grid; gap: 2px; }
 .tag-list .group { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--soft); margin: 12px 0 4px; }
 .tag-list button { text-align: left; padding: 10px 6px; border-radius: 8px; }
-.tag-list button:hover { background: var(--chip); }
+@media (hover: hover) and (pointer: fine) { .tag-list button:hover { background: var(--chip); } }
 
 .section-label { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--soft); margin: 10px 4px 8px; font-weight: 600; }
 .view-banner { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 10px; font-weight: 600; }
