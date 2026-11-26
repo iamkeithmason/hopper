@@ -19,6 +19,7 @@ Live at <https://hopper-keith.vercel.app> (sign-in is limited to one email addre
 | `tests/share_check.py` | Save on share: a share saves on arrival with one capture call (route `share`), the toast offers Add note, the note goes on the saved note as its why-saved line, and a failed save opens the sheet with the share. Run after changing the share or capture flow. |
 | `tests/signin_check.py` | Sign-in messages: an expired or used link, the 2-emails-an-hour limit and a dead session each get a plain reason on the sign-in screen (never a blank page or "isn't Hopper's owner"), the 6-digit code from the email signs in, and Sign out signs out this device only. Run after changing sign-in. |
 | `tests/contrast_check.py` | WCAG AA audit: every Keep colour and none, light and dark, cards, header and the open note; every visible text and placeholder at 4.5:1, chip outlines and icons at 3:1. Run before pushing colour or style changes. |
+| `tests/design_check.py` | Design guardrail: renders the app at phone and desktop widths, light and dark, and fails when a rendered type treatment, icon size, spacing, radius, colour, shadow or transition is neither a design token nor in `tests/design-baseline.json` (today's drift, which may only shrink). Also fails on a `:hover` outside `@media (hover: hover)`, `scale(0)` and raw transition durations. Exit 0 clean, 1 drift, 2 could not run. Run before pushing style changes; `--baseline` drops values no page renders any more, `--self-test` proves it still catches planted drift. |
 
 ### Edge functions
 

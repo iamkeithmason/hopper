@@ -14,6 +14,7 @@ Every backlog ticket carries a **Hands-off** flag: *Runs unattended* (Claude can
 - `hopper.note_cards` is a view: new columns can only be appended at the end.
 - Commit and push before deploying a function, applying a migration or shipping the app; never deploy from uncommitted work. Every migration also goes in `supabase/migrations/` (the file named for its version). Before redeploying a function, check the live version matches the repo (`get_edge_function`); if it doesn't, bring the live code into the repo first rather than overwriting it.
 - After changing `supabase/functions/*`, deploy that function to Supabase; after changing the schema, refresh `supabase/schema.sql`.
+- Design values are guarded by `tests/design_check.py` (baseline `tests/design-baseline.json`, which may only shrink). Run it before pushing style changes; a new value means adding a token first, or an `admitted` entry with a reason.
 
 ## Style
 

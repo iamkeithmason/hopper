@@ -27,6 +27,12 @@ function el(tag, attrs = {}, ...kids) {
   return e;
 }
 function icon(name) { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); const u = document.createElementNS("http://www.w3.org/2000/svg", "use"); u.setAttribute("href", `#i-${name}`); s.append(u); return s; }
+// An icon set inline in text: the text's own size and colour (style.css .t-icon). With a label, screen readers say it.
+function inlineIcon(name, label) {
+  const s = icon(name); s.classList.add("t-icon");
+  if (label) { s.setAttribute("role", "img"); s.setAttribute("aria-label", label); } else s.setAttribute("aria-hidden", "true");
+  return s;
+}
 const fmtDate = (d) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 const fmtTime = (d) => new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 // A toast can carry one action button (the "Add note" after a share); it then stays up longer, and a tap on the
@@ -268,7 +274,7 @@ $("view-empty").addEventListener("click", async () => {
 function card(n) {
   // Cards in the Bin say when they'll be erased.
   const erase = n.erases_at ? el("div", { class: "c-erase" }, `Erased ${fmtDate(n.erases_at)}`) : null;
-  if (n.locked) return el("div", { class: "card locked", "data-id": n.id, onclick: () => openNote(n.id) }, "🔒 ", fmtDate(n.created_at), n.title ? el("div", {}, n.title) : null, erase);
+  if (n.locked) return el("div", { class: "card locked", "data-id": n.id, onclick: () => openNote(n.id) }, inlineIcon("lock", "Locked"), fmtDate(n.created_at), n.title ? el("div", {}, n.title) : null, erase);
   const projects = (n.projects || []).join(" · ");
   // Image cards lead with the picture and one line: the title, or else the note's first line.
   // HOP-36: display_title (from hopper-api) stands in for a missing or file-like title. Text cards with no title at
@@ -909,7 +915,7 @@ async function openNote(id, push = true) {
     if (n.locked) {
       body.replaceChildren(...[
         binBar,
-        el("h1", {}, "🔒 ", n.title || "Locked note"),
+        el("h1", {}, inlineIcon("lock", "Locked"), n.title || "Locked note"),
         n.deleted_at ? null : el("p", { class: "muted" }, n.user_locked ? "You locked this note. Tap the lock below to unlock it."
           : n.can_unlock ? `The safety check locked this note${n.lock_reason ? ` (${n.lock_reason})` : ""}. If that's wrong, tap the lock below to unlock it.`
           : "The safety check locked this note. It opens with your master password, which comes in a later build."),
