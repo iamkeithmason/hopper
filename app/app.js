@@ -516,7 +516,10 @@ function setEditorChrome(n) {
   sheet.className = `sheet tall detail ${colourClass(n?.color)}`;
   // Binned notes are read-only until restored: the Bin banner holds their only actions.
   const locked = !n || n.locked || !!n.deleted_at;
-  for (const id of ["d-pin", "d-archive", "d-colour-btn", "d-format", "d-more", "d-more2"]) $(id).hidden = locked;
+  for (const id of ["d-pin", "d-archive", "d-colour-btn", "d-format"]) $(id).hidden = locked;
+  // A locked note keeps the ⋯ menu so it can go to the Bin without being unlocked; its link stays hidden.
+  for (const id of ["d-more", "d-more2"]) $(id).hidden = !n || !!n.deleted_at;
+  $("d-open-link").hidden = !!n?.locked;
   $("d-lock").hidden = !n || !!n.deleted_at || (n.locked && !(n.can_unlock ?? n.user_locked));
   if (!n) return;
   $("d-pin").replaceChildren(icon(n.pinned ? "pinned" : "pin"));
@@ -1222,10 +1225,12 @@ $("d-copy-link").addEventListener("click", async () => {
   $("d-menu").hidden = true;
   try { await navigator.clipboard.writeText(`${location.origin}/n/${state.note.id}`); toast("Link copied"); } catch { toast("Couldn't copy the link"); }
 });
-// Delete moves the note to the Bin (no confirmation: it can be restored from the Bin for 7 days).
+// Delete moves the note to the Bin (no confirmation: it can be restored from the Bin for 7 days). A locked note asks
+// first, since its content can't be seen to check; it stays locked in the Bin, where Delete forever erases it now.
 $("d-delete").addEventListener("click", async () => {
   const n = state.note; $("d-menu").hidden = true;
   if (!n) return;
+  if (n.locked && !confirm("Move this locked note to the Bin? It stays locked there. To erase it now, open it in the Bin and tap Delete forever.")) return;
   try {
     await flushSave(); pending = {};
     const { erases_at } = await api({ action: "delete", id: n.id });
