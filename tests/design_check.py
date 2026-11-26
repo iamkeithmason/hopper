@@ -50,9 +50,14 @@ READ = r"""() => {
   for (const scope of scopes) { const cs = getComputedStyle(scope);
     for (const n of names) { const raw = cs.getPropertyValue(n).trim(); if (!raw) continue;
       const c = resolve("color", raw); if (c && raw !== "" && /^(#|rgb|hsl)/.test(raw)) tokens.colour.add(c);
-      if (/^-?[\d.]+(px|rem|em)$|^(clamp|calc|min|max)\(/.test(raw)) tokens.length.add(resolve("width", raw));
+      if (!/^--(fs|lh)-/.test(n) && /^-?[\d.]+(px|rem|em)$|^(clamp|calc|min|max)\(/.test(raw)) tokens.length.add(resolve("width", raw));
       if (/^[\d.]+m?s$/.test(raw)) tokens.time.add(resolve("transition-duration", raw));
       if (/^(cubic-bezier|ease|linear|steps)/.test(raw)) tokens.easing.add(resolve("transition-timing-function", raw)); } }
+  const pairs = new Set(), sizes = new Set(); const rcs = getComputedStyle(document.documentElement);
+  for (const n of names) if (n.startsWith("--fs-")) { const lh = rcs.getPropertyValue("--lh-" + n.slice(5)).trim(); const fs = rcs.getPropertyValue(n).trim();
+    if (fs && lh) { const f = resolve("width", fs), l = resolve("width", lh); pairs.add(`${f}/${l}`); sizes.add(f); } }
+  tokens.typePairs = pairs; tokens.fontSizes = sizes;
+  tokens.caps = parseFloat(rcs.getPropertyValue("--caps")) || null;
   probe.remove();
   const out = [];
   const px = (v) => v && v !== "0px" && v !== "auto" && v !== "normal";
@@ -64,7 +69,9 @@ READ = r"""() => {
     if ([...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) || /^(INPUT|TEXTAREA)$/.test(el.tagName))
       v.push(["type", `${cs.fontFamily.split(",")[0].replace(/"/g, "")} ${cs.fontWeight} ${cs.fontSize}/${cs.lineHeight} ${cs.letterSpacing} ${cs.textTransform} ${cs.fontStyle}`]);
     for (const p of ["marginTop", "marginRight", "marginBottom", "marginLeft", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "rowGap", "columnGap"])
-      if (px(cs[p]) && !(cs.position === "fixed" && p.startsWith("padding"))) v.push(["spacing", cs[p]]);
+      if (px(cs[p]) && !(cs.position === "fixed" && p.startsWith("padding"))
+          && !(p.startsWith("margin") && String(el.computedStyleMap?.().get(p.replace(/[A-Z]/, (c) => "-" + c.toLowerCase()))) === "auto"))
+        v.push(["spacing", cs[p]]);  // an auto margin resolves to whatever space is left, so it isn't a design value
     if (cs.borderTopLeftRadius !== "0px") v.push(["radius", cs.borderTopLeftRadius]);
     v.push(["colour", cs.color]);
     if (cs.backgroundColor !== "rgba(0, 0, 0, 0)") v.push(["colour", cs.backgroundColor]);
@@ -78,7 +85,7 @@ READ = r"""() => {
         if (parseFloat(d) > 0) v.push(["motion", `${p.trim()} ${d.trim()} ${e.trim()}`]); });
     for (const [f, val] of v) out.push({ f, val, sel });
   }
-  return { out, tokens: Object.fromEntries(Object.entries(tokens).map(([k, s]) => [k, [...s]])) };
+  return { out, tokens: Object.fromEntries(Object.entries(tokens).map(([k, s]) => [k, s instanceof Set ? [...s] : s])) };
 }"""
 
 
@@ -91,7 +98,18 @@ def is_token(f, val, tok):
         prop, dur, ease = val.split(" ", 2)
         moves = prop in ("all", "transform", "translate", "scale", "rotate")
         return not moves and dur in tok["time"] and ease in tok["easing"]
-    return False  # type, icon and shadow have no tokens yet: everything is baseline until named styles exist
+    if f == "type":  # a named style: a size and line height pair from --fs-*/--lh-*, a standard weight, tracking only on caps
+        *_, weight, pair, ls, transform, _style = val.split(" ")
+        if pair not in tok["typePairs"] or weight not in ("400", "500", "600", "700"):
+            return False
+        if ls == "normal":
+            return True
+        size = float(pair.split("px")[0])
+        return transform == "uppercase" and tok["caps"] is not None and abs(float(ls[:-2]) - tok["caps"] * size) < 0.05
+    if f == "icon":  # sized from its text: as wide and tall as the font size of the element it sits in, on the scale
+        m = re.match(r"(\d+)x(\d+) in ([\d.]+)px/", val)
+        return bool(m) and m.group(1) == m.group(2) and f"{m.group(3)}px" in tok["fontSizes"] and abs(int(m.group(1)) - float(m.group(3))) < 0.6
+    return False  # shadow has no tokens yet: everything is baseline
 
 
 def source_rules(css):
