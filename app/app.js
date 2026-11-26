@@ -967,7 +967,7 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
   const sheet = $("d-sheet"), body = $("d-body"), overlay = $("detail");
   let y0 = null, dy = 0, t0 = 0, pulling = false;
   const springBack = () => {
-    sheet.style.transition = "transform .2s ease-out";
+    sheet.style.transition = "transform var(--dur-exit) var(--ease-sheet)";
     sheet.style.transform = ""; overlay.style.backgroundColor = "";
     setTimeout(() => (sheet.style.transition = ""), 220);
   };
@@ -1001,9 +1001,9 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
     pulling = false; sheet.classList.remove("pulling");
     const flick = dy / Math.max(1, Date.now() - t0) > 0.6;
     if (dy > 120 || (flick && dy > 40)) {
-      sheet.style.transition = "transform .18s ease-in";
+      sheet.style.transition = "transform var(--dur-exit) var(--ease-out)"; // leaving: fast start, no ease-in lag
       sheet.style.transform = "translateY(100%)";
-      setTimeout(() => $("detail-close").click(), 170); // closing saves any pending edits
+      setTimeout(() => $("detail-close").click(), 190); // closing saves any pending edits
     } else springBack();
   };
   sheet.addEventListener("touchend", end);
