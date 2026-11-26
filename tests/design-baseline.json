@@ -3,35 +3,8 @@
  "created": "2026-11-26",
  "updated": "2026-11-26",
  "families": {
-  "type": [
-   "-apple-system 400 11px/15.95px 0.44px uppercase normal",
-   "-apple-system 400 12.5px/18.125px normal none normal",
-   "-apple-system 400 12px/17.4px 0.48px uppercase normal",
-   "-apple-system 400 12px/17.4px normal none normal",
-   "-apple-system 400 13.5px/19.575px normal none normal",
-   "-apple-system 400 13px/18.85px normal none normal",
-   "-apple-system 400 15px/21.75px normal none italic",
-   "-apple-system 400 15px/21.75px normal none normal",
-   "-apple-system 400 16px/25.6px normal none normal",
-   "-apple-system 500 13px/18.85px normal none normal",
-   "-apple-system 500 15px/21.75px normal none normal",
-   "-apple-system 500 21px/27.3px normal none normal",
-   "-apple-system 600 11.5px/16.675px 0.575px uppercase normal",
-   "-apple-system 600 11.5px/16.675px 0.805px uppercase normal",
-   "-apple-system 600 14px/20.3px normal none normal",
-   "-apple-system 600 15px/21.75px normal none normal",
-   "Georgia 400 14.5px/21.025px normal none normal"
-  ],
-  "icon": [
-   "13x13 in 15px/21.75px",
-   "14x14 in 15px/21.75px",
-   "15x15 in 15px/21.75px",
-   "16x16 in 13px/18.85px",
-   "18x18 in 15px/21.75px",
-   "20x20 in 15px/21.75px",
-   "22x22 in 20px/29px",
-   "24x24 in 15px/21.75px"
-  ],
+  "type": [],
+  "icon": [],
   "spacing": [
    "100px",
    "10px",
@@ -39,15 +12,11 @@
    "12px",
    "146px",
    "16px",
-   "177px",
    "18px",
    "1px",
    "20px",
    "22px",
-   "236.172px",
    "24px",
-   "250.672px",
-   "259.172px",
    "26px",
    "2px",
    "3px",
@@ -94,5 +63,11 @@
    "raw duration: transition: transform .22s ease"
   ]
  },
- "admitted": []
+ "admitted": [
+  {
+   "family": "icon",
+   "value": "24x24 in 15px/22px",
+   "reason": "The phone bar's round New button (.lb-new): the bar's main action, drawn larger than its text on purpose (type scale, 26 Nov 2026)."
+  }
+ ]
 }
