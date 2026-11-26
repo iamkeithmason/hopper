@@ -14,6 +14,8 @@
   --dur-enter: 280ms; --dur-exit: 260ms; --dur-pop-in: 150ms; --dur-pop-out: 110ms;
   --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-exit: cubic-bezier(0.4, 0, 0.2, 1); /* leaving: even enough that the slide is seen, never an ease-in lag */ --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  /* Skeleton cards: one slow sweep of light across the placeholders while a batch loads. */
+  --dur-shimmer: 1400ms;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -450,3 +452,44 @@ button.chip { border: 0; font: inherit; color: inherit; }
   #tag-filter { order: 3; margin: 8px 0 0; }
 }
 @media (max-width: 699px) and (prefers-reduced-motion: reduce) { .lbar { transition: none; } }
+
+/* Skeleton cards (loading): grey placeholders the shape of cards, in the board's own columns, so the board appears at
+   once and the real cards land where the placeholders were. Under reduced motion they stay still. */
+.skel { margin: 0 0 8px; border-radius: var(--radius); overflow: hidden; background: var(--card); box-shadow: var(--shadow); }
+@media (min-width: 1000px) { .skel { margin-bottom: 12px; } }
+.skel .sk-media, .skel .sk-line, .d-skel .sk-line { background: var(--chip); }
+.skel .sk-line { height: 10px; margin: 10px 12px 0; border-radius: var(--radius); }
+.skel .sk-line.short { width: 55%; margin-bottom: 12px; }
+.d-skel .sk-line { height: 14px; margin: 0 0 12px; border-radius: var(--radius); }
+.d-skel .sk-line.title { height: 22px; width: 70%; margin-bottom: 18px; }
+.d-skel .sk-line.short { width: 45%; }
+@media (prefers-reduced-motion: no-preference) {
+  .skel .sk-media, .skel .sk-line, .d-skel .sk-line {
+    background: linear-gradient(90deg, var(--chip) 35%, var(--line) 50%, var(--chip) 65%) 0 0 / 300% 100%;
+    animation: sk-shimmer var(--dur-shimmer) linear infinite; }
+  /* real cards that replace skeletons fade in rather than pop */
+  .card.arrive { animation: sk-arrive var(--dur-enter) var(--ease-out); }
+}
+@keyframes sk-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes sk-arrive { from { opacity: 0; } }
+
+/* Tap a card: the card grows into the note view and its picture flies to the top of the note (a view transition,
+   app.js morph()). While it runs the sheet's own slide is off, so the two never fight. Closing reverses it. */
+.morphing .overlay, .morphing .overlay > .sheet { transition: none !important; }
+.morphing .overlay > .sheet { translate: 0 0 !important; }
+::view-transition-group(*) { animation-duration: var(--dur-enter); animation-timing-function: var(--ease-sheet); }
+.morph-close::view-transition-group(*) { animation-duration: var(--dur-exit); }
+::view-transition-group(note-card) { border-radius: var(--radius); overflow: clip; }
+/* the card's face fades out fast; the note's content shows at its own size, revealed as the box grows */
+::view-transition-old(note-card) { animation-duration: var(--dur-pop-out); height: 100%; object-fit: cover; object-position: top; }
+::view-transition-new(note-card) { height: 100%; object-fit: none; object-position: top; }
+::view-transition-image-pair(note-hero) { isolation: auto; }
+::view-transition-old(note-hero), ::view-transition-new(note-hero) { animation: none; mix-blend-mode: normal; height: 100%; object-fit: cover; }
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+}
+
+/* Pinch to zoom an image in a note: it stays zoomed, clipped to its own box; drag to look around, double-tap to fit
+   (app.js pinchZoom). */
+#d-body img { touch-action: pan-x pan-y; transform-origin: 0 0; }
+#d-body img.zoomed { will-change: transform; }
