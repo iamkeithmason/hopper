@@ -274,7 +274,7 @@ $("view-empty").addEventListener("click", async () => {
 function card(n) {
   // Cards in the Bin say when they'll be erased.
   const erase = n.erases_at ? el("div", { class: "c-erase" }, `Erased ${fmtDate(n.erases_at)}`) : null;
-  if (n.locked) return el("div", { class: "card locked", "data-id": n.id, onclick: () => openNote(n.id) }, inlineIcon("lock", "Locked"), fmtDate(n.created_at), n.title ? el("div", {}, n.title) : null, erase);
+  if (n.locked) return el("div", { class: "card locked", "data-id": n.id, onclick: (e) => openNote(n.id, true, e.currentTarget) }, inlineIcon("lock", "Locked"), fmtDate(n.created_at), n.title ? el("div", {}, n.title) : null, erase);
   const projects = (n.projects || []).join(" · ");
   // Image cards lead with the picture and one line: the title, or else the note's first line.
   // HOP-36: display_title (from hopper-api) stands in for a missing or file-like title. Text cards with no title at
@@ -295,7 +295,7 @@ function card(n) {
   const media = n.image ? el("div", { class: "c-media" },
     el("img", { src: n.image, alt: "", onerror: (e) => { e.target.closest(".card")?.classList.remove("has-media"); e.target.parentNode.replaceWith(hover); } }),
     mediaMark(n.media), hover) : null;
-  return el("div", { class: `card ${n.format || ""} ${colourClass(n.color)}${media ? " has-media" : ""}`, "data-id": n.id, onclick: () => openNote(n.id) },
+  return el("div", { class: `card ${n.format || ""} ${colourClass(n.color)}${media ? " has-media" : ""}`, "data-id": n.id, onclick: (e) => openNote(n.id, true, e.currentTarget) },
     n.pinned ? (() => { const s = icon("pinned"); s.classList.add("pin-mark"); return s; })() : null,
     media, text, media ? null : hover, erase);
 }
@@ -380,6 +380,26 @@ async function loadPinned() {
   } catch { wrap.hidden = true; }
 }
 
+// ---------- skeleton cards ----------
+// While a batch loads, each column ends in grey cards the shape of real ones (three each on an empty board, one each
+// below cards already there). They go when the batch is placed, and the new cards fade in where they were.
+const SKEL_HEIGHTS = [180, 120, 240, 150, 210, 110, 260, 140];
+function skeleton(i) {
+  return el("div", { class: "skel", "aria-hidden": "true" },
+    i % 3 === 2 ? null : el("div", { class: "sk-media", style: `height: ${SKEL_HEIGHTS[i % SKEL_HEIGHTS.length]}px` }),
+    el("div", { class: "sk-line" }), el("div", { class: "sk-line short" }));
+}
+function showSkeletons(box) {
+  if (!box.children.length) layout(box);
+  const each = hasCards(box) ? 1 : 3, out = [];
+  [...box.children].forEach((col, c) => { for (let k = 0; k < each; k++) { const s = skeleton(c + k * box.children.length); col.append(s); out.push(s); } });
+  box.setAttribute("aria-busy", "true");
+  return out;
+}
+function clearSkeletons(box, sk) {
+  sk.forEach((s) => s.remove()); box.removeAttribute("aria-busy");
+}
+
 function resetFeed() {
   renderBar();
   state.oldest = null; state.binOffset = 0; state.done = false; layout($("feed")); $("status").textContent = "";
@@ -390,8 +410,18 @@ function resetFeed() {
 
 async function loadMore() {
   if (state.loading || state.done) return;
-  state.loading = true; $("more").textContent = "Loading…";
+  state.loading = true;
   const gen = $("feed").gen; // a reset while this batch loads makes it stale
+  const feed = $("feed"), sk = showSkeletons(feed), fresh = !hasCards(feed);
+  // Placing a batch: the skeletons go first, so the columns measure true; cards replacing a whole empty board fade in.
+  const placeSized = async (box, cards, g) => {
+    await sizeImages(cards);
+    if (box.gen !== g) return false;
+    clearSkeletons(box, sk);
+    if (fresh) cards.forEach((c) => { c.classList.add("arrive"); c.addEventListener("animationend", () => c.classList.remove("arrive"), { once: true }); });
+    place(box, cards);
+    return true;
+  };
   try {
     if (state.bin) {
       // The Bin loads in pages as you scroll, like the feed.
@@ -417,7 +447,8 @@ async function loadMore() {
       }
     }
   } catch (e) { if ($("feed").gen === gen) { $("status").textContent = e.message; state.done = true; } }
-  state.loading = false; $("more").textContent = "";
+  clearSkeletons(feed, sk);
+  state.loading = false;
   // The observer only fires when "more" crosses into range. If a batch didn't push it back out (a tall screen,
   // short cards), nothing would fire again, so look again: observing afresh reports the current state.
   if (!state.done) { moreObserver.unobserve($("more")); moreObserver.observe($("more")); }
@@ -899,16 +930,59 @@ function fromPage(n) {
       summaryOnce(x)]));
 }
 
-async function openNote(id, push = true) {
+// ---------- tap to expand ----------
+// A tapped card grows into the note view, App Store style: a view transition morphs the card's box into the sheet
+// (named note-card) and its picture into the picture at the top of the note (note-hero). Closing plays it backwards
+// into the same card if it is still on the board. Off under reduced motion and where the browser lacks view
+// transitions; the sheet then slides up as before.
+const canMorph = () => !!document.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+const name = (e, n) => { if (e) e.style.viewTransitionName = n; };
+function morph(closing, from, to, update) {
+  name(from.box, "note-card"); name(from.hero, "note-hero");
+  document.documentElement.classList.add("morphing"); document.documentElement.classList.toggle("morph-close", closing);
+  const vt = document.startViewTransition(() => {
+    name(from.box, ""); name(from.hero, "");
+    update();
+    const t = to(); name(t.box, "note-card"); name(t.hero, "note-hero");
+    morph.last = t;
+  });
+  vt.finished.finally(() => {
+    name(morph.last?.box, ""); name(morph.last?.hero, "");
+    document.documentElement.classList.remove("morphing", "morph-close");
+  });
+  return vt;
+}
+const cardParts = (c) => ({ box: c, hero: c.querySelector(".c-media img") });
+const sheetParts = () => ({ box: $("d-sheet"), hero: $("d-body").querySelector(".d-images img") });
+
+// What the note view shows while the note loads: the tapped card's picture where the note's will be (so the
+// expand lands on it), then skeleton lines for the title and text.
+function detailSkeleton(from) {
+  const src = from?.querySelector(".c-media img")?.src;
+  return [
+    src ? el("div", { class: "d-images" }, el("figure", { class: "d-img" }, el("img", { src, alt: "" }))) : null,
+    el("div", { class: "d-skel", "aria-hidden": "true" },
+      el("div", { class: "sk-line title" }), el("div", { class: "sk-line" }), el("div", { class: "sk-line" }), el("div", { class: "sk-line short" })),
+  ].filter(Boolean);
+}
+
+async function openNote(id, push = true, from = null) {
   if (push) { history.pushState({ note: id }, "", `/n/${id}`); track("note_open", { note_id: id }); } // HOP-63: a tap on a card
-  state.note = null; pending = {};
-  const body = $("d-body"); body.replaceChildren(el("p", { class: "muted" }, "Loading…"));
-  setEditorChrome(null); $("d-meta").textContent = "";
-  $("d-colours").hidden = true; $("d-menu").hidden = true;
-  $("d-sheet").style.transform = ""; $("d-sheet").style.transition = ""; $("detail").style.backgroundColor = "";
-  $("detail").hidden = false; document.body.style.overflow = "hidden";
+  // A card inside the note view (Related) opens in place; only a card on the board expands.
+  if (from && (from.closest("#detail") || !$("detail").hidden)) from = null;
+  const body = $("d-body");
+  const show = () => {
+    state.note = null; pending = {};
+    body.replaceChildren(...detailSkeleton(from));
+    setEditorChrome(null); $("d-meta").textContent = "";
+    $("d-colours").hidden = true; $("d-menu").hidden = true;
+    $("d-sheet").style.transform = ""; $("d-sheet").style.transition = ""; $("detail").style.backgroundColor = "";
+    $("detail").hidden = false; document.body.style.overflow = "hidden";
+  };
+  // The note's content waits for the expand to finish, so nothing swaps under the moving picture.
+  const settled = from && canMorph() ? morph(false, cardParts(from), sheetParts, show).finished.catch(() => {}) : (show(), null);
   try {
-    const { note: n, related } = await api({ action: "note", id });
+    const [{ note: n, related }] = await Promise.all([api({ action: "note", id }), settled]);
     state.note = n; state.tagEdit = false; n.title0 = n.title || "";
     setEditorChrome(n);
     const binBar = n.deleted_at ? binBanner(n) : null;
@@ -954,9 +1028,19 @@ async function openNote(id, push = true) {
 }
 
 async function closeDetail() {
+  const id = state.note?.id;
   await flushSave();
-  $("detail").hidden = true; document.body.style.overflow = ""; state.note = null;
-  $("d-colours").hidden = true; $("d-menu").hidden = true;
+  const hide = () => {
+    $("detail").hidden = true; document.body.style.overflow = ""; state.note = null;
+    $("d-colours").hidden = true; $("d-menu").hidden = true;
+  };
+  // Back into the card it came from, if that card is on the board and in view. A sheet already pulled down
+  // has left on its own, so it just closes.
+  const c = id && [...document.querySelectorAll("#feed .card, #pinned .card")].find((x) => x.dataset.id === id);
+  const r = c?.getBoundingClientRect();
+  const inView = r && r.bottom > 0 && r.top < innerHeight;
+  if (inView && canMorph() && !$("d-sheet").style.transform) morph(true, sheetParts(), () => cardParts(c), hide);
+  else hide();
 }
 $("detail-close").addEventListener("click", () => history.state?.note ? history.back() : (closeDetail(), history.replaceState({}, "", "/")));
 $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("detail-close").click(); });
@@ -978,6 +1062,7 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
   }, { passive: true });
   sheet.addEventListener("touchmove", (e) => {
     if (y0 == null) return;
+    if (e.touches.length > 1 && !pulling) { y0 = null; return; } // a second finger: a pinch, not a pull
     dy = e.touches[0].clientY - y0;
     if (!pulling) {
       if (dy < 0 || body.scrollTop > 0) { y0 = null; return; } // scrolling up into the note: leave it alone
@@ -1008,6 +1093,44 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
   };
   sheet.addEventListener("touchend", end);
   sheet.addEventListener("touchcancel", end);
+})();
+
+// Pinch an image in the note view: it follows two fingers, scaling about the point between them (1x to 4x) and
+// moving with them, then settles back into place when they lift, like peeking at a detail in a photo app. One
+// finger still scrolls and pulls the sheet down; touch-action in style.css hands pinches to this code instead of
+// zooming the whole page. Under reduced motion it still follows the fingers but snaps back without the glide.
+(function pinchPeek() {
+  const body = $("d-body");
+  let img = null, d0 = 1, m0 = null;
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const mid = (t) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+  body.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 2 || img) return;
+    const t = e.target.closest?.("img");
+    if (!t || t.closest(".card") || t.getBoundingClientRect().width < 120) return; // related cards and thumbnails stay put
+    img = t; d0 = Math.max(1, dist(e.touches)); m0 = mid(e.touches);
+    const r = img.getBoundingClientRect();
+    img.style.transformOrigin = `${m0.x - r.left}px ${m0.y - r.top}px`;
+    img.style.transition = "none"; img.classList.add("peeking");
+  }, { passive: true });
+  body.addEventListener("touchmove", (e) => {
+    if (!img || e.touches.length < 2) return;
+    e.preventDefault();
+    const s = Math.min(4, Math.max(1, dist(e.touches) / d0)), m = mid(e.touches);
+    img.style.transform = `translate(${m.x - m0.x}px, ${m.y - m0.y}px) scale(${s})`;
+  }, { passive: false });
+  const release = (e) => {
+    if (!img || e.touches.length >= 2) return;
+    const done = img; img = null;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) { done.style.transform = ""; done.classList.remove("peeking"); return; }
+    done.style.transition = "transform var(--dur-exit) var(--ease-sheet)";
+    done.style.transform = "";
+    setTimeout(() => { done.style.transition = ""; done.style.transformOrigin = ""; done.classList.remove("peeking"); }, 300);
+  };
+  body.addEventListener("touchend", release);
+  body.addEventListener("touchcancel", release);
+  // A pinch on a linked image must not open the link when the fingers lift.
+  body.addEventListener("click", (e) => { if (e.target.closest?.("img.peeking")) e.preventDefault(); }, true);
 })();
 addEventListener("popstate", () => route());
 
