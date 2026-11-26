@@ -4,3 +4,4 @@ node_modules/
 .env.*
 .vercel/
 supabase/.temp/
+__pycache__/
