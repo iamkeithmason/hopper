@@ -6,7 +6,8 @@ Runs the real app against a slow fake API in headless Chrome at phone size, with
   placed the skeletons are gone; a note shows skeleton lines (and the tapped card's picture) while it loads
 - tapping a card on the board starts a view transition, and when it ends no element keeps a view-transition-name,
   the note is open with the card's picture at the top; back plays it in reverse and the note closes
-- two fingers on a note's image scale it about the point between them, and it settles back when they lift
+- two fingers on a note's image zoom it about the point between them and it stays zoomed, clipped to its box; one
+  finger drags it, never pulling the sheet down; a double tap settles it back to fit
 - with reduced motion there is no view transition and no shimmer; the note still opens and closes
 Run:  python3 tests/motion_check.py      (SHOTS=dir to save screenshots, including one mid-expand)
 """
@@ -110,8 +111,26 @@ def main():
             check(2.8 < sc < 3.2, f"{tag}: spreading two fingers scales the picture (scale {sc})")
             check(pg.is_visible("#detail") and not pg.eval_on_selector("#d-sheet", "(e) => e.style.transform"), f"{tag}: the pinch doesn't pull the sheet down")
             cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
-            pg.wait_for_timeout(450)
-            check(not pg.eval_on_selector("#d-body .d-images img", "(e) => e.style.transform || e.classList.contains('peeking')"), f"{tag}: the picture settles back when the fingers lift")
+            pg.wait_for_timeout(300)
+            TF = "(e) => e.style.transform"
+            tf1 = pg.eval_on_selector("#d-body .d-images img", TF)
+            check("scale(" in (tf1 or "") and pg.eval_on_selector("#d-body .d-images img", "(e) => e.classList.contains('zoomed')"), f"{tag}: the picture stays zoomed when the fingers lift ({tf1})")
+            vis = pg.eval_on_selector("#d-body .d-images img", "(e) => { const r = e.getBoundingClientRect(), c = e.style.clipPath; return !!c && c.startsWith('inset'); }")
+            check(vis, f"{tag}: the zoomed picture is clipped to its own box")
+            # one finger drags it around
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": cx, "y": cy, "id": 3}]})
+            for k in (10, 25, 40):
+                cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": cx + k, "y": cy + k, "id": 3}]})
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+            tf2 = pg.eval_on_selector("#d-body .d-images img", TF)
+            check(tf2 != tf1 and "scale(" in (tf2 or ""), f"{tag}: one finger drags the zoomed picture ({tf2})")
+            check(pg.is_visible("#detail") and not pg.eval_on_selector("#d-sheet", "(e) => e.style.transform"), f"{tag}: dragging a zoomed picture doesn't pull the sheet down")
+            for _ in range(2):  # double tap
+                cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": cx, "y": cy, "id": 4}]})
+                cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+                pg.wait_for_timeout(80)
+            pg.wait_for_timeout(400)
+            check(not pg.eval_on_selector("#d-body .d-images img", "(e) => e.style.transform || e.classList.contains('zoomed')"), f"{tag}: a double tap settles it back to fit")
 
             vt0 = pg.evaluate("window.VT")
             pg.tap("#d-back"); pg.wait_for_timeout(700)

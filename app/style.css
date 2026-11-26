@@ -489,6 +489,7 @@ button.chip { border: 0; font: inherit; color: inherit; }
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }
 
-/* Pinch an image in a note: it follows two fingers, up to 4x, and settles back when they lift (app.js pinchPeek). */
-#d-body img { touch-action: pan-x pan-y; }
-#d-body img.peeking { position: relative; z-index: 3; will-change: transform; }
+/* Pinch to zoom an image in a note: it stays zoomed, clipped to its own box; drag to look around, double-tap to fit
+   (app.js pinchZoom). */
+#d-body img { touch-action: pan-x pan-y; transform-origin: 0 0; }
+#d-body img.zoomed { will-change: transform; }

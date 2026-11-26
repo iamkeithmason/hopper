@@ -1057,7 +1057,7 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
   };
   sheet.addEventListener("touchstart", (e) => {
     y0 = null;
-    if (e.touches.length !== 1 || body.scrollTop > 0 || e.target.closest(".pop, .pg-whole")) return;
+    if (e.touches.length !== 1 || body.scrollTop > 0 || e.target.closest(".pop, .pg-whole, img.zoomed")) return;
     y0 = e.touches[0].clientY; dy = 0; t0 = Date.now(); pulling = false;
   }, { passive: true });
   sheet.addEventListener("touchmove", (e) => {
@@ -1095,42 +1095,72 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
   sheet.addEventListener("touchcancel", end);
 })();
 
-// Pinch an image in the note view: it follows two fingers, scaling about the point between them (1x to 4x) and
-// moving with them, then settles back into place when they lift, like peeking at a detail in a photo app. One
-// finger still scrolls and pulls the sheet down; touch-action in style.css hands pinches to this code instead of
-// zooming the whole page. Under reduced motion it still follows the fingers but snaps back without the glide.
-(function pinchPeek() {
-  const body = $("d-body");
-  let img = null, d0 = 1, m0 = null;
+// Pinch to zoom an image in the note view (Keith's pick: it stays zoomed). Two fingers zoom it, from 1x to 4x,
+// about the point between them, and it stays zoomed when they lift. One finger then drags it around inside its own
+// frame, never past its edges. A double tap, or pinching back below 1x, settles it back to fit. Images that aren't
+// zoomed scroll and pull the sheet down as before; touch-action in style.css hands pinches to this code instead of
+// zooming the whole page. Under reduced motion it still follows the fingers but settles without the glide.
+(function pinchZoom() {
+  const body = $("d-body"), zoom = new WeakMap(); // img -> { s, x, y }
+  const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let img = null, g = null, lastTap = null;
   const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
-  const mid = (t) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+  const mid = (t) => t.length > 1 ? { x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 } : { x: t[0].clientX, y: t[0].clientY };
+  const get = (e) => zoom.get(e) || { s: 1, x: 0, y: 0 };
+  const apply = (e, z, glide) => {
+    // keep the picture covering its frame: no gap at any edge
+    const w = e.offsetWidth, h = e.offsetHeight;
+    z.x = Math.min(0, Math.max(w * (1 - z.s), z.x)); z.y = Math.min(0, Math.max(h * (1 - z.s), z.y));
+    e.style.transition = glide && !still() ? "transform var(--dur-exit) var(--ease-sheet), clip-path var(--dur-exit) var(--ease-sheet)" : "none";
+    e.style.transform = z.s > 1 ? `translate(${z.x}px, ${z.y}px) scale(${z.s})` : "";
+    // clip to the picture's own box, so a zoomed picture never covers the text or buttons around it
+    const l = -z.x / z.s, t = -z.y / z.s;
+    e.style.clipPath = z.s > 1 ? `inset(${t}px ${w - l - w / z.s}px ${h - t - h / z.s}px ${l}px)` : e.style.clipPath && "inset(0px)"; // glides back to the whole box
+    e.classList.toggle("zoomed", z.s > 1);
+    zoom.set(e, z);
+  };
+  const reset = (e) => apply(e, { s: 1, x: 0, y: 0 }, true);
+  const begin = (e) => {
+    const z = get(img), r = img.getBoundingClientRect(), m = mid(e.touches);
+    // the picture's untransformed corner, and the point of the picture under the fingers
+    const left = r.left - z.x, top = r.top - z.y;
+    g = { z, left, top, d0: e.touches.length > 1 ? Math.max(1, dist(e.touches)) : 0, m0: m, lx: (m.x - left - z.x) / z.s, ly: (m.y - top - z.y) / z.s, moved: false };
+  };
   body.addEventListener("touchstart", (e) => {
-    if (e.touches.length !== 2 || img) return;
     const t = e.target.closest?.("img");
-    if (!t || t.closest(".card") || t.getBoundingClientRect().width < 120) return; // related cards and thumbnails stay put
-    img = t; d0 = Math.max(1, dist(e.touches)); m0 = mid(e.touches);
-    const r = img.getBoundingClientRect();
-    img.style.transformOrigin = `${m0.x - r.left}px ${m0.y - r.top}px`;
-    img.style.transition = "none"; img.classList.add("peeking");
+    if (!t || t.closest(".card") || t.getBoundingClientRect().width < 120) { img = null; return; } // related cards and thumbnails stay put
+    if (e.touches.length === 2 || (e.touches.length === 1 && get(t).s > 1)) { img = t; begin(e); }
+    else img = null;
   }, { passive: true });
   body.addEventListener("touchmove", (e) => {
-    if (!img || e.touches.length < 2) return;
+    if (!img || !g) return;
     e.preventDefault();
-    const s = Math.min(4, Math.max(1, dist(e.touches) / d0)), m = mid(e.touches);
-    img.style.transform = `translate(${m.x - m0.x}px, ${m.y - m0.y}px) scale(${s})`;
+    const m = mid(e.touches);
+    if (Math.hypot(m.x - g.m0.x, m.y - g.m0.y) > 8) g.moved = true;
+    if (e.touches.length > 1 && g.d0) {
+      const s = Math.min(4, Math.max(0.8, g.z.s * dist(e.touches) / g.d0));
+      apply(img, { s, x: m.x - g.left - s * g.lx, y: m.y - g.top - s * g.ly }, false);
+      g.moved = true;
+    } else if (e.touches.length === 1) {
+      apply(img, { s: g.z.s, x: g.z.x + m.x - g.m0.x, y: g.z.y + m.y - g.m0.y }, false);
+    }
   }, { passive: false });
   const release = (e) => {
-    if (!img || e.touches.length >= 2) return;
-    const done = img; img = null;
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) { done.style.transform = ""; done.classList.remove("peeking"); return; }
-    done.style.transition = "transform var(--dur-exit) var(--ease-sheet)";
-    done.style.transform = "";
-    setTimeout(() => { done.style.transition = ""; done.style.transformOrigin = ""; done.classList.remove("peeking"); }, 300);
+    if (!img) return;
+    if (e.touches.length) { begin(e); return; } // one finger of a pinch lifted: carry on with the other
+    const done = img, z = get(done), tap = g && !g.moved;
+    img = null; g = null;
+    if (z.s < 1.05) { reset(done); return; } // pinched back down: settle to fit
+    if (tap) {
+      const now = Date.now();
+      if (lastTap?.img === done && now - lastTap.t < 320) { reset(done); lastTap = null; } // double tap: back to fit
+      else lastTap = { img: done, t: now };
+    }
   };
   body.addEventListener("touchend", release);
   body.addEventListener("touchcancel", release);
-  // A pinch on a linked image must not open the link when the fingers lift.
-  body.addEventListener("click", (e) => { if (e.target.closest?.("img.peeking")) e.preventDefault(); }, true);
+  // A zoomed picture that sits in a link must not open the link on a tap or drag.
+  body.addEventListener("click", (e) => { if (e.target.closest?.("img.zoomed")) e.preventDefault(); }, true);
 })();
 addEventListener("popstate", () => route());
 
