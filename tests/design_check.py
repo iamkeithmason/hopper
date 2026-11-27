@@ -4,8 +4,8 @@ Renders the real app against a fake API (as the other checks do) in headless Chr
 1440px, light and dark, with reduced motion on, through the feed, the phone's navigation sheet, a project with
 topics, an open note and the capture sheet. It reads the computed style of every visible element and sorts the
 values into families: type, icon, spacing, radius, colour, shadow and motion. A value passes when it equals a
-design token (a custom property resolved on the page) or appears in the baseline. Source rules on style.css add
-what rendering can't see: every :hover sits inside @media (hover: hover), nothing scales from 0, and every
+design token (a custom property resolved on the page; a shadow when each of its layers is a token's layer) or
+appears in the baseline. Source rules on style.css add what rendering can't see: every :hover sits inside @media (hover: hover), nothing scales from 0, and every
 transition names its duration with a token.
 
 The baseline holds the drift that existed when the check arrived (26 Nov 2026). It may only shrink:
@@ -45,14 +45,16 @@ READ = r"""() => {
   for (const sh of document.styleSheets) { let rules; try { rules = sh.cssRules; } catch { continue; }
     const walk = (rs) => { for (const r of rs) { if (r.style) for (const p of r.style) if (p.startsWith("--")) names.add(p); if (r.cssRules) walk(r.cssRules); } };
     walk(rules); }
-  const tokens = { colour: new Set(), length: new Set(), time: new Set(), easing: new Set() };
+  const tokens = { colour: new Set(), length: new Set(), time: new Set(), easing: new Set(), shadow: new Set() };
+  const layers = (v) => v.split(/,(?![^(]*\))/).map((x) => x.trim());
   const scopes = [document.documentElement, ...document.querySelectorAll(".card, .pop, .menu, [class*='c-']")];
   for (const scope of scopes) { const cs = getComputedStyle(scope);
     for (const n of names) { const raw = cs.getPropertyValue(n).trim(); if (!raw) continue;
       const c = resolve("color", raw); if (c && raw !== "" && /^(#|rgb|hsl)/.test(raw)) tokens.colour.add(c);
       if (!/^--(fs|lh)-/.test(n) && /^-?[\d.]+(px|rem|em)$|^(clamp|calc|min|max)\(/.test(raw)) tokens.length.add(resolve("width", raw));
       if (/^[\d.]+m?s$/.test(raw)) tokens.time.add(resolve("transition-duration", raw));
-      if (/^(cubic-bezier|ease|linear|steps)/.test(raw)) tokens.easing.add(resolve("transition-timing-function", raw)); } }
+      if (/^(cubic-bezier|ease|linear|steps)/.test(raw)) tokens.easing.add(resolve("transition-timing-function", raw));
+      if (/\dpx/.test(raw) && /(rgb|#|hsl)/.test(raw)) { const sh = resolve("box-shadow", raw); if (sh && sh !== "none") layers(sh).forEach((l) => tokens.shadow.add(l)); } } }
   const pairs = new Set(), sizes = new Set(); const rcs = getComputedStyle(document.documentElement);
   for (const n of names) if (n.startsWith("--fs-")) { const lh = rcs.getPropertyValue("--lh-" + n.slice(5)).trim(); const fs = rcs.getPropertyValue(n).trim();
     if (fs && lh) { const f = resolve("width", fs), l = resolve("width", lh); pairs.add(`${f}/${l}`); sizes.add(f); } }
@@ -75,7 +77,7 @@ READ = r"""() => {
     if (cs.borderTopLeftRadius !== "0px") v.push(["radius", cs.borderTopLeftRadius]);
     v.push(["colour", cs.color]);
     if (cs.backgroundColor !== "rgba(0, 0, 0, 0)") v.push(["colour", cs.backgroundColor]);
-    if (cs.borderTopStyle !== "none" && cs.borderTopWidth !== "0px") v.push(["colour", cs.borderTopColor]);
+    if (cs.borderTopStyle !== "none" && cs.borderTopWidth !== "0px" && cs.borderTopColor !== "rgba(0, 0, 0, 0)") v.push(["colour", cs.borderTopColor]);
     if (cs.boxShadow !== "none") v.push(["shadow", cs.boxShadow]);
     if (el.tagName === "svg" && r.width < 64) { const pc = getComputedStyle(el.parentElement);
       v.push(["icon", `${Math.round(r.width)}x${Math.round(r.height)} in ${pc.fontSize}/${pc.lineHeight}`]); }
@@ -93,7 +95,9 @@ def is_token(f, val, tok):
     if f == "colour":
         return val in tok["colour"]
     if f in ("spacing", "radius"):
-        return val in tok["length"]
+        return val.lstrip("-") in tok["length"]  # a negative margin pulls back by a step of the scale
+    if f == "shadow":  # every layer is a layer of a shadow token (--shadow, --ring, --shadow-float, ...)
+        return all(l.strip() in tok["shadow"] for l in re.split(r",(?![^(]*\))", val))
     if f == "motion":  # reduced motion is forced: only an opacity or colour change may still run
         prop, dur, ease = val.split(" ", 2)
         moves = prop in ("all", "transform", "translate", "scale", "rotate")
@@ -109,7 +113,7 @@ def is_token(f, val, tok):
     if f == "icon":  # sized from its text: as wide and tall as the font size of the element it sits in, on the scale
         m = re.match(r"(\d+)x(\d+) in ([\d.]+)px/", val)
         return bool(m) and m.group(1) == m.group(2) and f"{m.group(3)}px" in tok["fontSizes"] and abs(int(m.group(1)) - float(m.group(3))) < 0.6
-    return False  # shadow has no tokens yet: everything is baseline
+    return False
 
 
 def source_rules(css):
@@ -190,7 +194,7 @@ def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     if mode == "--self-test":
         planted = """
-.planted { color: #123456; margin: 13px; font: 600 19px/23px serif; }
+.planted { color: #123456; margin: 13px; font: 600 19px/23px serif; border-radius: 5px; box-shadow: 0 2px 3px #123456; }
 .planted-icon { width: 18px; height: 18px; }
 .planted:hover { color: red; }
 .planted { transition: transform 333ms linear; }
@@ -198,7 +202,7 @@ def main():
         bad = render(os.path.join(ROOT, "app"), planted)
         base = load()
         new = {k for k in bad if k[1] not in base["families"].get(k[0], []) and not admitted(base, k)}
-        want = {"colour": "rgb(18, 52, 86)", "spacing": "13px", "icon": "18x18", "source": "unguarded hover: .planted:hover", "type": "19px/23px"}
+        want = {"colour": "rgb(18, 52, 86)", "spacing": "13px", "icon": "18x18", "source": "unguarded hover: .planted:hover", "type": "19px/23px", "radius": "5px", "shadow": "0px 2px 3px"}
         ok = True
         for f, needle in want.items():
             hit = any(k[0] == f and needle in k[1] for k in new)
