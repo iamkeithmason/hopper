@@ -1,67 +1,16 @@
 {
  "note": "Drift that existed when the design check arrived. May only shrink; see tests/design_check.py.",
  "created": "2026-11-26",
- "updated": "2026-11-26",
+ "updated": "2026-11-27",
  "families": {
   "type": [],
   "icon": [],
-  "spacing": [
-   "100px",
-   "10px",
-   "11px",
-   "12px",
-   "146px",
-   "16px",
-   "18px",
-   "1px",
-   "20px",
-   "22px",
-   "24px",
-   "26px",
-   "2px",
-   "3px",
-   "4.5px",
-   "40px",
-   "4px",
-   "6px",
-   "7px",
-   "8px",
-   "9px"
-  ],
-  "radius": [
-   "10px",
-   "12px",
-   "16px",
-   "17px",
-   "18px",
-   "20px",
-   "22px",
-   "23px",
-   "24px",
-   "26px",
-   "2px"
-  ],
-  "colour": [
-   "rgb(255, 255, 255)",
-   "rgba(0, 0, 0, 0.4)",
-   "rgba(20, 19, 17, 0.72)"
-  ],
-  "shadow": [
-   "rgb(228, 223, 213) 0px 0px 0px 1px, rgba(0, 0, 0, 0.08) 0px 3px 10px 0px",
-   "rgb(228, 223, 213) 0px 0px 0px 1px, rgba(0, 0, 0, 0.12) 0px 6px 18px 0px",
-   "rgb(47, 45, 42) 0px 0px 0px 1px, rgba(0, 0, 0, 0.08) 0px 3px 10px 0px",
-   "rgb(47, 45, 42) 0px 0px 0px 1px, rgba(0, 0, 0, 0.12) 0px 6px 18px 0px",
-   "rgba(0, 0, 0, 0.05) 0px 1px 2px 0px, rgba(0, 0, 0, 0.05) 0px 4px 14px 0px",
-   "rgba(0, 0, 0, 0.2) 0px 3px 10px 0px"
-  ],
-  "motion": [
-   "opacity 0.15s ease",
-   "transform 0.22s ease"
-  ],
-  "source": [
-   "raw duration: transition: opacity .15s",
-   "raw duration: transition: transform .22s ease"
-  ]
+  "spacing": [],
+  "radius": [],
+  "colour": [],
+  "shadow": [],
+  "motion": [],
+  "source": []
  },
  "admitted": [
   {
