@@ -5,3 +5,6 @@ node_modules/
 .vercel/
 supabase/.temp/
 __pycache__/
+
+# Search probe records hold note titles and summaries: keep them out of this public repo.
+tests/probe-results/

@@ -16,6 +16,9 @@ import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 // web-page, app-screen, print-page, image, video) apart from its borrow (what Keith wants to learn from it: layout,
 // type, palette...). Hopper infers a medium for every save from what arrived and marks it inferred; a stated one
 // replaces it. search_references and search_notes filter by both, and search_references has a slim result mode.
+// Version 11 (HOP-72, 82, 83): both searches match keywords term by term (title, why-saved line, summaries), drop hits
+// far below the top score, search_references leaves out Hopper's own UI, and get_reference role=type returns a short
+// summary unless detail is full.
 // Lets Claude search Hopper and use its design reference library from any MCP client, and save new
 // references for Keith (save_to_hopper). Saving only ever adds: a new note, or a page's screenshots and link on an
 // existing note. Beyond that, set_note_projects changes which projects a note is filed in; no tool edits a note's
@@ -99,7 +102,7 @@ const TOOLS = [
   {
     name: "search_references",
     title: "Search design references",
-    description: "Search Keith's saved design references (images judged to be visual references) by meaning, optionally filtered by aesthetic tags or kind. Returns each match's design read: summary, aesthetic tags, palette with roles, type classification, what it's good for, and how to borrow from it. With no query, returns the newest references.",
+    description: "Search Keith's saved design references (images judged to be visual references) by meaning and keyword (title, why-saved line, read summaries), optionally filtered by aesthetic tags or kind. Hits far below the best one are left out, and so are screenshots of Hopper itself. Returns each match's design read: summary, aesthetic tags, palette with roles, type classification, what it's good for, and how to borrow from it. With no query, returns the newest references.",
     inputSchema: {
       type: "object",
       properties: {
@@ -126,7 +129,8 @@ const TOOLS = [
         images: { type: "boolean", description: "Include the images (default true, up to 4)." },
         page: { type: "string", description: "Only images captured from this page (part of its address, e.g. 'unmind-insights')." },
         from_px: { type: "number", description: "With role full-page or page-tile: only tiles from this many px down the page at 1440, to read further down a tall page (4 images a call)." },
-        role: { type: "string", enum: ["first-screen-1440", "first-screen-390", "full-page", "page-tile", "figure", "motion-strip", "motion", "type"], description: "Only images in this role. full-page on a page with tiles gives the tiles instead: the page at native width, one tile per section, top to bottom, each with its position (pass from_px to go further down); a page without tiles gives its scaled whole-page shot. Captions say when Hopper declined a consent banner or hid an overlay before the shot. A motion-strip is three frames of a moving part of the page (the first screen, a video, the page as it loads, or its first scroll reveal), left to right. role=motion gives each captured page's measured motion (durations, easing, delays, travel, staggers, load or scroll, what reduced motion keeps, the motion library) with its motion strips. role=type gives each page's measured text treatments (family, size, weight, line height, tracking, with the roles they are used for: h1, h2, p, nav a, uppercase labels) and icon sizes with their boxes, at 1440 and 390, and no images. Each treatment carries its lowest contrast against what is behind it (WCAG AA needs 4.5:1, or 3:1 for large text) and how many uses fall below; facts per width give the heading outline with order breaks (h2 to h4), calls to action in the first screen, and on the phone tap targets under 44 px." },
+        role: { type: "string", enum: ["first-screen-1440", "first-screen-390", "full-page", "page-tile", "figure", "motion-strip", "motion", "type"], description: "Only images in this role. full-page on a page with tiles gives the tiles instead: the page at native width, one tile per section, top to bottom, each with its position (pass from_px to go further down); a page without tiles gives its scaled whole-page shot. Captions say when Hopper declined a consent banner or hid an overlay before the shot. A motion-strip is three frames of a moving part of the page (the first screen, a video, the page as it loads, or its first scroll reveal), left to right. role=motion gives each captured page's measured motion (durations, easing, delays, travel, staggers, load or scroll, what reduced motion keeps, the motion library) with its motion strips. role=type gives each page's measured text treatments (family, size, weight, line height, tracking, with the roles they are used for: h1, h2, p, nav a, uppercase labels) and icon sizes with their boxes, at 1440 and 390, and no images: a short summary per page unless detail is full. Each treatment (full) carries its lowest contrast against what is behind it (WCAG AA needs 4.5:1, or 3:1 for large text) and how many uses fall below; facts per width give the heading outline with order breaks (h2 to h4), calls to action in the first screen, and on the phone tap targets under 44 px; the summary keeps the contrast summary and these facts." },
+        detail: { type: "string", enum: ["summary", "full"], description: "For role=type only. summary (default) gives each page's families, body size, size scale with ratios to the body, one treatment per role and icon sizes, in a few hundred tokens. full gives every treatment with its colour, sample text and position." },
       },
       required: ["id"],
     },
@@ -149,7 +153,7 @@ const TOOLS = [
   {
     name: "search_notes",
     title: "Search notes",
-    description: "Search everything Keith has saved in Hopper (notes, bookmarks, quotes, images) by meaning and keyword, or, with a project, medium or borrow and no query, list the newest notes that match. Returns titles, one-line summaries, format, medium and borrow, date, projects and links. A note with no usable title (none, or a file or site name) also has display_title, worked out from its first line or summary; the stored title is unchanged.",
+    description: "Search everything Keith has saved in Hopper (notes, bookmarks, quotes, images) by meaning and keyword (title, why-saved line, tagged works and people, summary, body), leaving out hits far below the best one, or, with a project, medium or borrow and no query, list the newest notes that match. Returns titles, one-line summaries, format, medium and borrow, date, projects and links. A note with no usable title (none, or a file or site name) also has display_title, worked out from its first line or summary; the stored title is unchanged.",
     inputSchema: {
       type: "object",
       properties: {
@@ -387,7 +391,10 @@ async function searchReferences(a: any) {
   }
   const limit = clamp(a.limit, 1, slim ? 40 : 20, 8);
   const vec = q ? await embed(q) : null;
-  const rows = await sql`
+  // HOP-72: keyword hits on the title, the why-saved line and the reads' summaries lift a reference above the pack
+  // (weights and share rule as in search_notes), then hits far below the top one are dropped.
+  const pats = q ? termPatterns(q) : [];
+  const rows = relCut(await sql`
     with refs as (
       select n.id, n.title, n.why_saved, n.aesthetics, n.created_at, n.medium, n.medium_inferred, n.borrow, n.borrow_inferred,
         (select jsonb_agg(jsonb_build_object('read', at.design_read, 'img', to_jsonb(at) - 'design_read' - 'text_in_image')
@@ -403,17 +410,24 @@ async function searchReferences(a: any) {
       from hopper.notes_for_ai n
       where (cardinality(${tags}::text[]) = 0 or n.aesthetics @> ${tags}::text[])
         and (${m.medium}::text is null or n.medium = ${m.medium}::text)
-        and (cardinality(${m.borrow}::text[]) = 0 or n.borrow @> ${m.borrow}::text[]))
+        and (cardinality(${m.borrow}::text[]) = 0 or n.borrow @> ${m.borrow}::text[])
+        -- HOP-82: screenshots of Hopper itself are not design references.
+        and not exists (select 1 from hopper.note_links ol where ol.note_id = n.id and ol.url ~* ${OWN_UI}))
     select r.id, r.title, r.why_saved, r.aesthetics, r.reads, r.pages, r.medium, r.medium_inferred, r.borrow, r.borrow_inferred,
       (select l.url from hopper.note_links l where l.note_id = r.id limit 1) as link,
-      case when ${vec}::text is null then null else 1 - (e.embedding <=> ${vec}::extensions.vector) end as score
+      case when ${vec}::text is null then null else 1 - (e.embedding <=> ${vec}::extensions.vector) + kb.bonus end as score
     from refs r left join hopper.note_embeddings e on e.note_id = r.id
+    cross join lateral (select (select string_agg(x->'read'->>'summary', ' ')
+                                from jsonb_array_elements(coalesce(r.pages, '[]'::jsonb) || coalesce(r.reads, '[]'::jsonb)) x) as summaries) rs
+    cross join lateral (select case when ${pats.length > 0} then greatest(${earn(share(sql`r.title`, pats.length ? pats : [""]), KW.title)},
+      ${earn(share(sql`r.why_saved`, pats.length ? pats : [""]), KW.why)}, ${earn(share(sql`rs.summaries`, pats.length ? pats : [""]), KW.summary)})
+      else 0 end as bonus) kb
     where (r.reads is not null or r.pages is not null)
       and (${kind}::text is null or exists (select 1 from jsonb_array_elements(coalesce(r.reads, '[]'::jsonb)) x where x->'read'->>'kind' = ${kind}::text)
            or (${kind}::text in ('web-ui', 'editorial') and r.pages is not null))
       and (${vec}::text is null or e.embedding is not null)
-    order by case when ${vec}::text is null then null else e.embedding <=> ${vec}::extensions.vector end, r.created_at desc
-    limit ${limit}`;
+    order by score desc nulls last, r.created_at desc
+    limit ${limit}`);
   if (!rows.length) return [text("No references matched. Try a broader query, fewer aesthetic tags, moves or borrow values, or list_aesthetics and list_moves to see the vocabularies.")];
   if (slim) {
     // Slim mode: enough to choose from, with one summary per note: the first page
@@ -461,7 +475,13 @@ async function getReference(a: any) {
     const pages = rows.filter((r: any) => r.m).map((r: any) => ({ url: r.url, page_title: r.page_title || undefined,
       captured_on: r.captured_on ? day(r.captured_on) : undefined, [measured === "motion" ? "motion" : "type"]: r.m }));
     if (!pages.length) return [text(`This note has no ${measured} measurements yet. They are taken when a page is captured with page_screenshot.`)];
-    if (measured === "type") return [text({ id: n.id, title: n.title || undefined, pages })];
+    if (measured === "type") {
+      // HOP-83: a short summary per page by default (about 300 tokens); detail: "full" gives every treatment.
+      const full = a.detail === "full";
+      return [text({ id: n.id, title: n.title || undefined, detail: full ? "full" : "summary",
+        pages: full ? pages : pages.map((p: any) => ({ ...p, type: typeSummary(p.type) })),
+        ...(full ? {} : { more: 'Call again with detail: "full" for every text treatment with its colour, sample and position.' }) })];
+    }
     const strips = await sql`select a.id, a.storage_path, a.mime, a.design_read, ${sql.unsafe(IMAGE_COLS)} from hopper.attachments a
                              where a.note_id = ${id} and a.storage_path is not null and a.image_role = 'motion-strip'
                                and (${page}::text is null or a.source_page_url ilike ${page}::text)
@@ -490,6 +510,40 @@ async function getReference(a: any) {
   })];
   if (a.images !== false) out.push(...await imageBlocks(atts.slice(0, 4)));
   return out;
+}
+
+// HOP-83: a page's measured type in brief, at each width: families, body, the size scale and its ratios to the body,
+// one treatment per role (the most used), and icon sizes. Treatments read "size/line-height weight tracking family".
+function typeSummary(t: any) {
+  const at = (v: any) => {
+    if (!v?.treatment_count) return "nothing measured";
+    const roles = new Map<string, { uses: number; x: any }>();
+    for (const x of v.treatments ?? []) {
+      for (const r of x.roles ?? []) {
+        const had = roles.get(r.role);
+        if (!had || r.uses > had.uses) roles.set(r.role, { uses: r.uses, x });
+      }
+    }
+    const fmt = (x: any) => [`${x.size_px}/${x.line_height}`, x.weight, x.tracking_em ? `${x.tracking_em}em` : null, x.family]
+      .filter((y) => y != null && y !== "").join(" ");
+    const byUse = [...roles.entries()].sort((p, q) => q[1].uses - p[1].uses).slice(0, 10);
+    return {
+      families: (v.families ?? []).join(", "), body: v.body ? `${v.body.size_px}/${v.body.line_height} ${v.body.family}` : undefined,
+      scale_px: (v.sizes_px ?? []).join(" "), ratios_to_body: (v.scale_ratios ?? []).join(" "), treatments: v.treatment_count,
+      roles: Object.fromEntries(byUse.map(([r, y]) => [r, fmt(y.x)])),
+      icons: [...new Set((v.icons ?? []).map((i: any) => i.size))].slice(0, 6).join(", ") || undefined,
+      // #77: page facts, one short value each (type_scale v2 and later).
+      contrast: v.contrast_summary ? (v.contrast_summary.text_elements_below_aa
+        ? `${v.contrast_summary.text_elements_below_aa} text uses below WCAG AA; worst ${v.contrast_summary.worst?.map((w: any) => `${w.ratio}:1 "${w.sample}"`).join(", ")}`
+        : "all measured text meets WCAG AA") + (v.contrast_summary.over_image ? `; ${v.contrast_summary.over_image} over images, not measured` : "") : undefined,
+      headings: v.facts?.headings ? `${v.facts.headings.count} headings, ${v.facts.headings.h1} h1, first ${v.facts.headings.first ?? "none"}` +
+        (v.facts.headings.order_breaks?.length ? `; skips ${v.facts.headings.order_breaks.map((b: any) => `${b.from} to ${b.to}`).join(", ")}` : "; no skipped levels") : undefined,
+      ctas_first_screen: v.facts?.ctas_above_fold ? v.facts.ctas_above_fold.list.filter((c: any) => !c.in_header).map((c: any) => c.text).join(" | ") || "none outside the header" : undefined,
+      tap_targets: v.facts?.tap_targets ? `${v.facts.tap_targets.under_44} of ${v.facts.tap_targets.checked} under 44 px, ${v.facts.tap_targets.under_24} under 24 px` : undefined,
+      banner: v.overlays && v.overlays.action !== "none" ? (v.overlays.clicked ? `declined ("${v.overlays.clicked}")` : "hidden") : undefined,
+    };
+  };
+  return { at_1440: at(t?.at_1440), at_390: at(t?.at_390) };
 }
 
 async function imageBlocks(atts: any[]) {
@@ -527,15 +581,37 @@ async function projectNamed(name: string) {
   return p ? { project: p } : { error: `No project called ${name}. Projects: ${all.map((x: any) => x.name).join(", ")}.` };
 }
 
-// Search weights (HOP-34): a keyword hit adds this to the note's semantic score, by the best field it lands in.
-const KW = { title: 0.2, tag: 0.15, summary: 0.1, body: 0.05 };
+// Search weights (HOP-34, HOP-72): a keyword hit adds this to the note's semantic score, by the best field it lands in.
+const KW = { title: 0.2, why: 0.15, tag: 0.15, summary: 0.1, body: 0.05 };
 // Semantic-only hits scoring below this are left out. gte-small scores noise at 0.80 to 0.82; Keith chose 0.82 (25 Nov).
 const SEM_FLOOR = 0.82;
-// A case-insensitive whole-word pattern for the query (Postgres \m and \M mark word starts and ends).
-function wordPattern(q: string) {
-  const body = q.replace(/[\\^$.|?*+()[\]{}]/g, "\\$&").replace(/\s+/g, "\\s+");
-  return `${/^\w/.test(q) ? "\\m" : ""}${body}${/\w$/.test(q) ? "\\M" : ""}`;
+// HOP-82: notes linking to Hopper itself (the app, or its functions) are left out of search_references.
+const OWN_UI = String.raw`^https?://(hopper-keith\.vercel\.app|[a-z0-9]+\.supabase\.co/functions/v1/hopper)`;
+// HOP-72. Keywords are matched term by term, not as one phrase, so "Oak panel teardown" finds titles that say
+// "(Oak teardown)". A field counts only when it holds at least half the query's terms, and its weight scales with the
+// square of the share it holds: all terms earn the full weight, half of them a quarter. One shared word (the "Oak" in
+// "Oak console table") earns nothing.
+const KW_MIN_SHARE = 0.5;
+// A keyword bonus lets a hit below SEM_FLOOR through only when it is at least this big: a full match in the body, or
+// a partial one in a stronger field. Long essays hold most common words somewhere, so a smaller body bonus is noise.
+const KW_RESCUE = 0.05;
+// Relative cut-off: hits scoring more than this below the top hit are dropped. Junk and real hits sit 0.82 to 0.89
+// on meaning alone, so the cut bites when keywords lift the real hits clear of the pack.
+const REL_GAP = 0.1;
+const STOP = new Set(["a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "with", "by", "from", "at", "is", "are",
+  "as", "my", "me", "it", "its", "this", "that", "what", "how", "into", "vs", "about", "i"]);
+// Whole-word, case-insensitive patterns for the query's terms (Postgres \m and \M mark word starts and ends).
+function termPatterns(q: string) {
+  const words = q.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'’]*/gu) ?? [];
+  const terms = [...new Set(words.filter((w) => w.length > 1 && !STOP.has(w)))].slice(0, 12);
+  return terms.map((t) => `\\m${t.replace(/[\\^$.|?*+()[\]{}]/g, "\\$&")}\\M`);
 }
+// SQL for the share of the query's terms a text holds, and the bonus that share earns at a field's weight.
+const share = (col: any, pats: string[]) =>
+  sql`((select count(*) from unnest(${pats}::text[]) p where coalesce(${col}, '') ~* p)::float8 / ${pats.length}::float8)`;
+const earn = (s: any, w: number) => sql`(case when ${s} >= ${KW_MIN_SHARE}::float8 then ${w}::float8 * ${s} * ${s} else 0 end)`;
+// Drops hits far below the top one (rows come best first).
+const relCut = (rows: any[]) => rows.length && rows[0].score != null ? rows.filter((r) => r.score >= rows[0].score - REL_GAP) : rows;
 
 async function searchNotes(a: any) {
   const q = String(a.query ?? "").trim();
@@ -566,10 +642,11 @@ async function searchNotes(a: any) {
       order by n.created_at desc limit ${limit}`;
   } else {
     const vec = await embed(q);
-    // HOP-34. Keyword hits are matched as whole words and weighted by where they land (title, then a tagged work or
-    // person, then the AI summary, then the body), added to the semantic score. Semantic-only hits below SEM_FLOOR
-    // are dropped, so weak matches no longer pad the results to the limit.
-    const word = wordPattern(q);
+    // HOP-34, HOP-72. Keyword hits are matched term by term as whole words and weighted by where they land (title,
+    // then why-saved line, a tagged work or person, the AI summary, the body), added to the semantic score.
+    // Hits below SEM_FLOOR are dropped unless keywords earn them KW_RESCUE, then anything far below the top hit (REL_GAP).
+    const pats = termPatterns(q);
+    const any = pats.length ? `\\m(${pats.map((p) => p.slice(2, -2)).join("|")})\\M` : "a^";
     rows = await sql`
       with sem as (
         ${pid
@@ -581,21 +658,22 @@ async function searchNotes(a: any) {
                   and (cardinality(${m.borrow}::text[]) = 0 or n.borrow @> ${m.borrow}::text[])
                 order by e.embedding <=> ${vec}::extensions.vector limit 60`
           : sql`select e.note_id from hopper.note_embeddings e order by e.embedding <=> ${vec}::extensions.vector limit 60`}),
-      kw as (
-        select n.id as note_id,
-          case when n.title ~* ${word} then ${KW.title}::float8
-               when exists (select 1 from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = n.id and w.title ~* ${word})
-                 or exists (select 1 from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = n.id and p.name ~* ${word})
-                 then ${KW.tag}::float8
-               when n.summary ~* ${word} then ${KW.summary}::float8
-               else ${KW.body}::float8 end as bonus
+      kwn as (
+        select n.id, n.title, n.why_saved, n.summary, n.body,
+          concat_ws(' ', (select string_agg(w.title, ' ') from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = n.id),
+                         (select string_agg(p.name, ' ') from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = n.id)) as tags
         from hopper.notes_for_ai n
-        where (n.title ~* ${word} or n.summary ~* ${word} or n.body ~* ${word}
-               or exists (select 1 from hopper.note_works nw join hopper.works w on w.id = nw.work_id where nw.note_id = n.id and w.title ~* ${word})
-               or exists (select 1 from hopper.note_people np join hopper.people p on p.id = np.person_id where np.note_id = n.id and p.name ~* ${word}))
-          and (${pid}::uuid is null or exists (select 1 from hopper.note_projects np where np.note_id = n.id and np.project_id = ${pid}::uuid))
-        order by bonus desc limit 40),
-      cand as (select note_id from sem union select note_id from kw),
+        where ${pats.length > 0}
+          and (${pid}::uuid is null or exists (select 1 from hopper.note_projects np where np.note_id = n.id and np.project_id = ${pid}::uuid))),
+      kw as (
+        select k.id as note_id,
+          greatest(${earn(share(sql`k.title`, pats), KW.title)}, ${earn(share(sql`k.why_saved`, pats), KW.why)},
+                   ${earn(share(sql`k.tags`, pats), KW.tag)}, ${earn(share(sql`k.summary`, pats), KW.summary)},
+                   ${earn(share(sql`k.body`, pats), KW.body)}) as bonus
+        from kwn k
+        where k.title ~* ${any} or k.why_saved ~* ${any} or k.summary ~* ${any} or k.body ~* ${any} or k.tags ~* ${any}),
+      kwtop as (select * from kw where bonus > 0 order by bonus desc limit 40),
+      cand as (select note_id from sem union select note_id from kwtop),
       hits as (
         select c.note_id, coalesce(1 - (e.embedding <=> ${vec}::extensions.vector), 0) as sem, coalesce(k.bonus, 0) as bonus
         from cand c left join hopper.note_embeddings e on e.note_id = c.note_id left join kw k on k.note_id = c.note_id)
@@ -604,10 +682,11 @@ async function searchNotes(a: any) {
         (select array_agg(p.name) from hopper.note_projects np join hopper.projects p on p.id = np.project_id where np.note_id = n.id) as projects,
         (select l.url from hopper.note_links l where l.note_id = n.id limit 1) as link
       from hits h join hopper.notes_for_ai n on n.id = h.note_id
-      where not n.archived and (h.bonus > 0 or h.sem >= ${SEM_FLOOR})
+      where not n.archived and (h.bonus >= ${KW_RESCUE} or h.sem >= ${SEM_FLOOR})
         and (${m.medium}::text is null or n.medium = ${m.medium}::text)
         and (cardinality(${m.borrow}::text[]) = 0 or n.borrow @> ${m.borrow}::text[])
       order by h.sem + h.bonus desc limit ${limit}`;
+    rows = relCut(rows);
   }
   if (!rows.length) return [text(pid || modelled ? "Nothing matched with those filters." : "Nothing matched.")];
   return [text(rows.map((r: any) => ({
@@ -1000,7 +1079,7 @@ async function handle(msg: any) {
       return ok({
         protocolVersion: typeof params?.protocolVersion === "string" ? params.protocolVersion : PROTOCOL,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "hopper", title: "Hopper", version: "1.16.0" },
+        serverInfo: { name: "hopper", title: "Hopper", version: "1.17.0" },
         instructions: INSTRUCTIONS,
       });
     case "ping":

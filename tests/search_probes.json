@@ -1,0 +1,126 @@
+{
+  "about": "Probe set from the 28 Nov 2026 Hopper MCP stress test (HOP-81). Rerun after every hopper-mcp change with tests/search_probes.py. Automated probes call one read tool and check the result; manual probes need a save or a share and are checked by hand.",
+  "probes": [
+    {
+      "id": "1",
+      "name": "Case study structure finds captured pages",
+      "tool": "search_references",
+      "args": { "query": "case study page structure: section order, navigation", "detail": "slim", "limit": 10 },
+      "expect": { "top_n": 5, "min_with_pages": 3 }
+    },
+    {
+      "id": "2",
+      "name": "Competitor pages, not stray notes",
+      "tool": "search_notes",
+      "args": { "query": "competitor pricing page onboarding flow landing page comparison" },
+      "expect": { "top_n": 5, "min_matching": 3, "pattern": "pricing|onboarding|landing|teardown|homepage" }
+    },
+    {
+      "id": "3",
+      "name": "Tone of voice: nothing, or only voice and copy notes",
+      "tool": "search_notes",
+      "args": { "query": "tone of voice microcopy writing style" },
+      "expect": { "all_match": "voice|copy|writing|tone|style guide|content design" }
+    },
+    {
+      "id": "4",
+      "name": "Usability and IA",
+      "tool": "search_notes",
+      "args": { "query": "usability heuristics information architecture navigation wireframe" },
+      "expect": { "top_n": 5, "min_matching": 2, "pattern": "heuristic|usability|audit|information architecture|site ?map|wireframe|navigation" }
+    },
+    {
+      "id": "5",
+      "name": "Component collage move",
+      "tool": "search_references",
+      "args": { "moves": ["component-collage"], "detail": "slim", "limit": 20 },
+      "expect": { "min_results": 1, "max_chars": 20000 }
+    },
+    {
+      "id": "6",
+      "name": "Oak panel teardown: only teardown notes",
+      "tool": "search_notes",
+      "args": { "query": "Oak panel teardown" },
+      "expect": { "all_match": "teardown|oak national academy" }
+    },
+    {
+      "id": "7a",
+      "name": "Type summary is short",
+      "tool": "get_reference",
+      "args": { "id": "f17f44aa-4fc1-4f6c-ba8b-7b7318bc1732", "role": "type" },
+      "expect": { "max_chars": 6000, "contains": "scale" }
+    },
+    {
+      "id": "7b",
+      "name": "Teardown note has type measurements",
+      "tool": "get_reference",
+      "args": { "id": "aca4eb4b-7ed1-4de3-8d0d-5e4867030b0c", "role": "type" },
+      "expect": { "not_contains": "no type measurements yet" },
+      "depends_on": "HOP-78 (recapture older pages)"
+    },
+    {
+      "id": "8",
+      "name": "Tall page as legible tiles",
+      "manual": "get_reference role=full-page on a page over 10,000px: expect tiles at native width, one per section.",
+      "depends_on": "HOP-79"
+    },
+    {
+      "id": "9",
+      "name": "Airbnb open search sheet",
+      "manual": "get_note on the Airbnb teardown: expect the open Where/When/Who sheet as a state frame.",
+      "depends_on": "HOP-70"
+    },
+    {
+      "id": "10",
+      "name": "Study outputs findable",
+      "tool": "search_notes",
+      "args": { "query": "Figma wireframe render" },
+      "expect": { "top_n": 3, "min_matching": 1, "pattern": "wireframe (of|for)|study output" },
+      "depends_on": "HOP-80 (attach_artifact)"
+    },
+    {
+      "id": "11",
+      "name": "Cheap tier for quotes and articles",
+      "manual": "Save a quote and an article: expect the cheap tier only. Save a competitor page with a layout reason: expect the heavy tier with no flag passed.",
+      "depends_on": "HOP-69"
+    },
+    {
+      "id": "12",
+      "name": "Ask once when the reason is missing",
+      "manual": "Save via the MCP with no stated reason: expect Claude to ask once for medium, borrow and reason, not guess."
+    },
+    {
+      "id": "13",
+      "name": "Bare illustration from Keep",
+      "manual": "Share a bare illustration: expect image x illustration, marked inferred, no DOM work.",
+      "depends_on": "HOP-69"
+    },
+    {
+      "id": "14",
+      "name": "Print pages, small result",
+      "tool": "search_references",
+      "args": { "medium": "print-page", "detail": "slim", "limit": 20 },
+      "expect": { "min_results": 1, "max_chars": 20000 },
+      "depends_on": "print-page medium being set (HOP-69 routing, or a re-read)"
+    },
+    {
+      "id": "15",
+      "name": "Bare palette card",
+      "manual": "Share a bare palette card: expect image x palette, not other.",
+      "depends_on": "HOP-69"
+    },
+    {
+      "id": "16",
+      "name": "Printable worksheet thumbnail",
+      "manual": "Share a printable worksheet thumbnail: expect image x mockup, not documentation.",
+      "depends_on": "HOP-69"
+    },
+    {
+      "id": "17",
+      "name": "Hopper's own UI is not a reference",
+      "tool": "search_references",
+      "args": { "query": "dark masonry board of saved notes with search bar and project tabs", "detail": "slim", "limit": 10 },
+      "expect": { "none_link": "hopper-keith\\.vercel\\.app" }
+    }
+  ]
+}
