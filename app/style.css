@@ -470,6 +470,17 @@ button.chip { font: inherit; color: inherit; }
 }
 @media (max-width: 699px) and (prefers-reduced-motion: reduce) { .lbar { transition: none; } }
 
+/* Flipped feed (phone trial): the board runs bottom-up, like a chat. The newest note sits by the bar, bottom left
+   under the thumb, and older notes run upward. Columns align to the bottom, so their ragged ends are at the top;
+   pinned notes sit nearest the bar under their label, and the "Others" label goes. The page is at least a screen
+   tall, so a short board still starts by the bar. Desktop is unchanged. */
+@media (max-width: 699px) {
+  main { display: flex; flex-direction: column-reverse; justify-content: flex-start; min-height: 100dvh; }
+  .feed { align-items: flex-end; }
+  .feed > .col { display: flex; flex-direction: column-reverse; }
+  #pinned-wrap > .section-label:last-child { display: none; }
+}
+
 /* Skeleton cards (loading): grey placeholders the shape of cards, in the board's own columns, so the board appears at
    once and the real cards land where the placeholders were. Under reduced motion they stay still. */
 .skel { margin: 0 0 var(--space-8); border-radius: var(--radius-card); overflow: hidden; background: var(--card); box-shadow: var(--shadow); }

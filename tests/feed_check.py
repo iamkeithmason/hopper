@@ -95,13 +95,14 @@ def main():
                 pg.on("pageerror", lambda e: errors.append(str(e)))
                 pg.goto(url); pg.wait_for_timeout(1200)
                 before = pg.evaluate(POSITIONS)
-                pg.evaluate("scrollTo(0, document.body.scrollHeight)"); pg.wait_for_timeout(900)
+                # Phones run the feed bottom-up (older notes load at the top), so scroll the other way there.
+                pg.evaluate("scrollTo(0, %s)" % ("0" if w < 700 else "document.body.scrollHeight")); pg.wait_for_timeout(900)
                 after = pg.evaluate(POSITIONS)
                 moved = sum(1 for k in before if after.get(k) != before[k])
                 grew = pg.evaluate(COUNT) > len(before)
                 if run == 0 or moved or not grew or errors:
                     check(moved == 0, f"{w}x{h} run {run + 1}: no card moved when the next batch loaded ({moved} moved)")
-                    check(grew, f"{w}x{h} run {run + 1}: scrolling to the bottom loaded more ({len(before)} -> {pg.evaluate(COUNT)})")
+                    check(grew, f"{w}x{h} run {run + 1}: scrolling to the end loaded more ({len(before)} -> {pg.evaluate(COUNT)})")
                     check(not errors, f"{w}x{h} run {run + 1}: no page errors {errors[:1]}")
                 pg.close()
 
