@@ -89,7 +89,7 @@ create table hopper.attachments (
   caption text,
   text_in_image text,
   design_read jsonb,
-  image_role text,                        -- first-screen-1440, first-screen-390, full-page, figure or motion-strip
+  image_role text,                        -- first-screen-1440, first-screen-390, full-page, figure, motion-strip or page-tile
   source_page_url text,                   -- the page the image was captured from
   caption_on_page text,
   rendered_width_at_1440 integer,
@@ -99,7 +99,7 @@ create table hopper.attachments (
   moves text[] not null default '{}'::text[],  -- visual moves from hopper.moves, set by hopper-design
   content_sha256 text,                    -- sha256 of the stored bytes: the same picture is kept once per note
   constraint attachments_pkey primary key (id),
-  constraint attachments_image_role_check check (image_role in ('first-screen-1440','first-screen-390','full-page','figure','motion-strip')),
+  constraint attachments_image_role_check check (image_role in ('first-screen-1440','first-screen-390','full-page','figure','motion-strip','page-tile')),
   constraint attachments_note_id_original_file_key unique (note_id, original_file)
 );
 
