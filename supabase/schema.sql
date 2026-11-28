@@ -23,6 +23,8 @@
 -- transcript_at and transcript_model, and the notes_clear_ai_on_lock trigger (locking drops video summaries).
 -- 20261125213000_hopper_set_reads (HOP-31): notes.set_read, notes_for_ai carries it, the notes_clear_set_read_on_lock
 -- trigger, hopper.sets_waiting(), and design_sweep also runs when a set read is waiting.
+-- 20261128150000_hopper_medium_borrow: notes.medium, medium_inferred, borrow and borrow_inferred (the reference model),
+-- notes_for_ai carries them, and the note_links_infer_medium and attachments_infer_medium triggers.
 --
 -- Extensions used (in schema extensions): vector, pg_net, pg_cron.
 -- Grants: every table and view here has access revoked from public, anon and authenticated.
@@ -61,10 +63,16 @@ create table hopper.notes (
   capture_route text,
   capture_device text,
   set_read jsonb,                         -- HOP-31: the read of the note's images as a set (hopper-design)
+  medium text,                            -- what the note is (web-page, app-screen, print-page, image, video)
+  medium_inferred boolean not null default false,
+  borrow text[] not null default '{}'::text[], -- what Keith wants to learn from it (layout, type, palette...)
+  borrow_inferred boolean not null default false,
   constraint notes_pkey primary key (id),
   constraint notes_keep_file_key unique (keep_file),
   constraint notes_confidence_check check (confidence in ('high','medium','low')),
   constraint notes_format_check check (format in ('quote','note','bookmark','list','image','scratch','reference','component')),
+  constraint notes_medium_check check (medium in ('web-page','app-screen','print-page','image','video')),
+  constraint notes_borrow_check check (borrow <@ array['layout','type','palette','component','voice','motion','illustration','identity','documentation','mockup']::text[]),
   constraint notes_lock_source_check check (lock_source in ('user','pattern','classifier','review')),
   constraint notes_source_check check (source in ('keep-import','app','assistant','blog'))
 );
@@ -290,6 +298,8 @@ create index notes_aesthetics_idx on hopper.notes using gin (aesthetics);
 create index notes_created_idx on hopper.notes (created_at desc);
 create index notes_format_idx on hopper.notes (format);
 create index notes_locked_idx on hopper.notes (is_locked);
+create index notes_medium_idx on hopper.notes (medium);
+create index notes_borrow_idx on hopper.notes using gin (borrow);
 create index works_person_idx on hopper.works (person_id);
 
 -- Views
@@ -312,11 +322,16 @@ create or replace view hopper.note_cards as
 create or replace view hopper.notes_for_ai as
  select id, source, title, body, list_items, created_at, edited_at, archived, pinned,
    keep_labels, format, period, summary, confidence, cull_candidate, tagged_at, reviewed,
-   aesthetics, why_saved, anti_reference, set_read
+   aesthetics, why_saved, anti_reference, set_read, medium, borrow, medium_inferred, borrow_inferred
  from hopper.notes
  where is_locked = false and deleted_at is null;
 
 -- Functions
+
+-- The reference model: medium inferred from what arrived, for every capture route, marked inferred
+-- (see 20261128150000_hopper_medium_borrow for the bodies). A stated medium is never overwritten.
+-- trigger note_links_infer_medium after insert on hopper.note_links -> hopper.medium_from_link()
+-- trigger attachments_infer_medium after insert on hopper.attachments -> hopper.medium_from_image()
 
 -- HOP-61: locking a note drops its video summaries, as it drops the note's own summary and embedding.
 create or replace function hopper.clear_ai_on_lock() returns trigger
