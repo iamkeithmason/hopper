@@ -519,10 +519,10 @@ function typeSummary(t: any) {
       .filter((y) => y != null && y !== "").join(" ");
     const byUse = [...roles.entries()].sort((p, q) => q[1].uses - p[1].uses).slice(0, 10);
     return {
-      families: v.families, body: v.body ? `${v.body.size_px}/${v.body.line_height} ${v.body.family}` : undefined,
-      scale_px: v.sizes_px, ratios_to_body: v.scale_ratios, treatments: v.treatment_count,
+      families: (v.families ?? []).join(", "), body: v.body ? `${v.body.size_px}/${v.body.line_height} ${v.body.family}` : undefined,
+      scale_px: (v.sizes_px ?? []).join(" "), ratios_to_body: (v.scale_ratios ?? []).join(" "), treatments: v.treatment_count,
       roles: Object.fromEntries(byUse.map(([r, y]) => [r, fmt(y.x)])),
-      icons: [...new Set((v.icons ?? []).map((i: any) => i.size))].slice(0, 6),
+      icons: [...new Set((v.icons ?? []).map((i: any) => i.size))].slice(0, 6).join(", ") || undefined,
     };
   };
   return { at_1440: at(t?.at_1440), at_390: at(t?.at_390) };
@@ -574,6 +574,9 @@ const OWN_UI = String.raw`^https?://(hopper-keith\.vercel\.app|[a-z0-9]+\.supaba
 // square of the share it holds: all terms earn the full weight, half of them a quarter. One shared word (the "Oak" in
 // "Oak console table") earns nothing.
 const KW_MIN_SHARE = 0.5;
+// A keyword bonus lets a hit below SEM_FLOOR through only when it is at least this big: a full match in the body, or
+// a partial one in a stronger field. Long essays hold most common words somewhere, so a smaller body bonus is noise.
+const KW_RESCUE = 0.05;
 // Relative cut-off: hits scoring more than this below the top hit are dropped. Junk and real hits sit 0.82 to 0.89
 // on meaning alone, so the cut bites when keywords lift the real hits clear of the pack.
 const REL_GAP = 0.1;
@@ -623,7 +626,7 @@ async function searchNotes(a: any) {
     const vec = await embed(q);
     // HOP-34, HOP-72. Keyword hits are matched term by term as whole words and weighted by where they land (title,
     // then why-saved line, a tagged work or person, the AI summary, the body), added to the semantic score.
-    // Semantic-only hits below SEM_FLOOR are dropped, then anything far below the top hit (REL_GAP).
+    // Hits below SEM_FLOOR are dropped unless keywords earn them KW_RESCUE, then anything far below the top hit (REL_GAP).
     const pats = termPatterns(q);
     const any = pats.length ? `\\m(${pats.map((p) => p.slice(2, -2)).join("|")})\\M` : "a^";
     rows = await sql`
@@ -661,7 +664,7 @@ async function searchNotes(a: any) {
         (select array_agg(p.name) from hopper.note_projects np join hopper.projects p on p.id = np.project_id where np.note_id = n.id) as projects,
         (select l.url from hopper.note_links l where l.note_id = n.id limit 1) as link
       from hits h join hopper.notes_for_ai n on n.id = h.note_id
-      where not n.archived and (h.bonus > 0 or h.sem >= ${SEM_FLOOR})
+      where not n.archived and (h.bonus >= ${KW_RESCUE} or h.sem >= ${SEM_FLOOR})
         and (${m.medium}::text is null or n.medium = ${m.medium}::text)
         and (cardinality(${m.borrow}::text[]) = 0 or n.borrow @> ${m.borrow}::text[])
       order by h.sem + h.bonus desc limit ${limit}`;
