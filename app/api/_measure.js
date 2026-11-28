@@ -1,3 +1,5 @@
+import { clearOverlays } from "./_overlays.js";
+
 // Page measurements for benchmark captures (HOP-55, 56, 57), taken in the same headless Chrome as the screenshots.
 // shot.js calls these for { measure: "motion" } and { measure: "type" }; hopper-api asks for both side by side after
 // a desktop capture, each in its own function call, so neither eats the screenshots' 60 seconds.
@@ -269,7 +271,12 @@ export async function measureMotion(browser, url, width, height, ua, t0 = Date.n
     frames.push(await shoot(page).catch(() => null));
   }
   await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => {});
+  // The entrance frames show the page as it arrives, banner and all; the scroll reveals come after the banner is gone.
+  // Motion the banner itself makes as it goes is filed under its own phase, apart from the page's entrance.
+  await page.evaluate(() => { if (window.__hm) window.__hm.phase = "overlay"; }).catch(() => {});
+  const overlays = await clearOverlays(page);
   await wait(800);
+  await page.evaluate(() => { if (window.__hm) window.__hm.phase = "load"; }).catch(() => {});
   const strips = [];
   if (frames.every(Boolean)) {
     const s = await strip(browser, frames, width, height);
@@ -283,7 +290,7 @@ export async function measureMotion(browser, url, width, height, ua, t0 = Date.n
   const libs = await page.evaluate(libraries).catch(() => []);
   await page.close().catch(() => {});
   if (!rec) return { error: "the page wouldn't run the motion recorder", status };
-  const all = [...rec.anims, ...rec.js].sort((a, b) => a.start_ms - b.start_ms);
+  const all = [...rec.anims, ...rec.js].filter((a) => a.phase !== "overlay").sort((a, b) => a.start_ms - b.start_ms);
 
   // The same page with reduced motion forced: what the site keeps.
   let reduced = null;
@@ -291,13 +298,16 @@ export async function measureMotion(browser, url, width, height, ua, t0 = Date.n
     const rp = await openPage(browser, url, { reduce: true, ua });
     await rp.goto(url, { waitUntil: "domcontentloaded", timeout: 12000 }).catch(() => {});
     await rp.waitForNetworkIdle({ idleTime: 500, timeout: 4000 }).catch(() => {});
+    await rp.evaluate(() => { if (window.__hm) window.__hm.phase = "overlay"; }).catch(() => {});
+    await clearOverlays(rp);
+    await rp.evaluate(() => { if (window.__hm) window.__hm.phase = "load"; }).catch(() => {});
     await wait(1200);
     await scrollThrough(browser, rp, width, height, { frames: false, steps: 4, settle: 350 });
     const r2 = await rp.evaluate(() => window.__hm?.collect()).catch(() => null);
     await rp.close().catch(() => {});
     if (r2) {
       const full = all.filter((a) => a.iterations !== "infinite").length;
-      const kept = [...r2.anims, ...r2.js].filter((a) => a.iterations !== "infinite");
+      const kept = [...r2.anims, ...r2.js].filter((a) => a.iterations !== "infinite" && a.phase !== "overlay");
       reduced = { animations: kept.length, with_motion: full,
         honoured: full === 0 ? null : kept.length <= full * 0.3,
         still_moving: tally(kept.map((a) => a.target?.role)).slice(0, 4).map(([r]) => r) };
@@ -308,7 +318,7 @@ export async function measureMotion(browser, url, width, height, ua, t0 = Date.n
     status,
     strips,
     motion: {
-      v: 1, measured_at: new Date().toISOString(), width,
+      v: 1, measured_at: new Date().toISOString(), width, overlays,
       moves: all.length > 0, libraries: libs,
       entrance: summarise(load), scroll_reveals: summarise(scroll),
       trigger: load.length && scroll.length ? "load and scroll" : load.length ? "load" : scroll.length ? "scroll" : "none",
@@ -334,6 +344,40 @@ function typeAndIcons() {
   };
   const treatments = new Map();
   let total = 0;
+  // #77: contrast of each text element against what is behind it, composited up through its ancestors' backgrounds.
+  // Text over a background image or gradient is counted apart: its contrast can't be read from styles.
+  const rgba = (c) => {
+    const m = String(c).match(/rgba?\(([^)]+)\)/);
+    if (!m) return null;
+    const v = m[1].split(/[ ,/]+/).filter(Boolean).map(Number);
+    return v.length >= 3 && v.slice(0, 3).every(Number.isFinite) ? [v[0], v[1], v[2], Number.isFinite(v[3]) ? v[3] : 1] : null;
+  };
+  const over = (top, under) => {
+    const a = top[3];
+    return [0, 1, 2].map((i) => top[i] * a + under[i] * (1 - a)).concat(1);
+  };
+  const lum = (c) => {
+    const f = (x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+  };
+  const bgMemo = new WeakMap();
+  const behind = (el) => {
+    if (bgMemo.has(el)) return bgMemo.get(el);
+    const layers = [];
+    let image = false;
+    for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
+      const st = getComputedStyle(e);
+      if (st.backgroundImage && st.backgroundImage !== "none") { image = true; break; }
+      const c = rgba(st.backgroundColor);
+      if (c && c[3] > 0) { layers.push(c); if (c[3] >= 0.99) break; }
+    }
+    let base = [255, 255, 255, 1];
+    for (const c of layers.reverse()) base = over(c, base);
+    const out = { bg: base, image };
+    bgMemo.set(el, out);
+    return out;
+  };
+  const hex = (c) => "#" + c.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, "0")).join("");
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const done = new WeakSet();
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
@@ -356,10 +400,21 @@ function typeAndIcons() {
     if (!tr) {
       tr = { family, stack: s.fontFamily.slice(0, 120), size_px: size, weight: Number(s.fontWeight) || s.fontWeight, line_height: lh, tracking_em: ls,
         uppercase: upper || undefined, italic: s.fontStyle === "italic" || undefined, uses: 0, chars: 0, roles: {}, first_top: Math.round(r.top + window.scrollY),
-        sample: t.replace(/\s+/g, " ").slice(0, 40), colour: s.color };
+        sample: t.replace(/\s+/g, " ").slice(0, 40), colour: s.color, c_min: null, c_pair: null, c_below: 0, c_image: 0, c_large: false, c_text: null };
       treatments.set(key, tr);
     }
     tr.uses++; tr.chars += t.length; total += t.length;
+    const fg = rgba(s.color), bk = behind(el);
+    if (fg && bk.image) tr.c_image++;
+    else if (fg) {
+      const f = fg[3] < 1 ? over(fg, bk.bg) : fg;
+      const L1 = lum(f), L2 = lum(bk.bg);
+      const ratio = (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
+      // WCAG AA: 4.5:1, or 3:1 for large text (24 px, or 18.66 px bold).
+      const large = size >= 24 || (size >= 18.66 && (Number(s.fontWeight) || 400) >= 700);
+      if (ratio < (large ? 3 : 4.5)) tr.c_below++;
+      if (tr.c_min == null || ratio < tr.c_min) { tr.c_min = ratio; tr.c_pair = [hex(f), hex(bk.bg)]; tr.c_large = large; tr.c_text = t.replace(/\s+/g, " ").slice(0, 40); }
+    }
     let role = roleOf(el);
     if (upper && !/^h\d$/.test(role)) role += " (uppercase)";
     tr.roles[role] = (tr.roles[role] ?? 0) + 1;
@@ -367,10 +422,15 @@ function typeAndIcons() {
   const list = [...treatments.values()].filter((t) => t.chars >= 2);
   const body = list.filter((t) => !t.uppercase).sort((a, b) => b.chars - a.chars)[0];
   const sizes = [...new Set(list.map((t) => t.size_px))].sort((a, b) => b - a);
-  const out = list.sort((a, b) => b.size_px - a.size_px || b.chars - a.chars).slice(0, 24).map((t) => ({
+  const contrastOf = (t) => t.c_min == null && !t.c_image ? undefined : {
+    lowest: t.c_min == null ? null : Math.round(t.c_min * 100) / 100, colours: t.c_pair ?? undefined, lowest_on: t.c_text ?? undefined,
+    needs: t.c_large ? 3 : 4.5, below_aa: t.c_below, over_image: t.c_image || undefined };
+  const out = list.sort((a, b) => b.size_px - a.size_px || b.chars - a.chars).slice(0, 24).map(({ c_min, c_pair, c_below, c_image, c_large, c_text, ...t }) => ({
     ...t, roles: Object.entries(t.roles).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([role, uses]) => ({ role, uses })),
     share: total ? Math.round((t.chars / total) * 1000) / 10 : 0,
+    contrast: contrastOf({ c_min, c_pair, c_below, c_image, c_large, c_text }),
   }));
+  const failing = list.filter((t) => t.c_below > 0);
   // Icons: inline SVGs (not nested), icon-font glyphs and small SVG images, with the box each sits in.
   const icons = new Map();
   const iconFont = /icon|awesome|material|symbols|phosphor|lucide|feather|remix/i;
@@ -401,7 +461,88 @@ function typeAndIcons() {
     families: [...new Set(list.map((t) => t.family))].slice(0, 8),
     treatments: out, treatment_count: list.length,
     icons: [...icons.values()].sort((a, b) => b.uses - a.uses).slice(0, 16),
+    contrast_summary: {
+      treatments_below_aa: failing.length, text_elements_below_aa: failing.reduce((n, t) => n + t.c_below, 0),
+      worst: failing.sort((a, b) => a.c_min - b.c_min).slice(0, 3).map((t) => ({ sample: t.c_text ?? t.sample, size_px: t.size_px,
+        ratio: Math.round(t.c_min * 100) / 100, colours: t.c_pair })),
+      over_image: list.reduce((n, t) => n + t.c_image, 0),
+    },
   };
+}
+
+// #77: facts, not opinions, from the rendered page at this viewport. Headings in order and where the order breaks,
+// calls to action in the first screen, and (on a phone) tap targets under 44 x 44 px (Apple's and Material's minimum
+// is 44 and 48; WCAG 2.2's floor is 24).
+function pageFacts() {
+  const shown = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    const s = getComputedStyle(el);
+    return s.visibility !== "hidden" && s.display !== "none" && parseFloat(s.opacity) > 0.05;
+  };
+  const words = (el) => (el.innerText || el.getAttribute("aria-label") || el.value || el.title || el.querySelector?.("img[alt]")?.alt || "")
+    .trim().replace(/\s+/g, " ").slice(0, 50);
+  // Headings, h1 to h6 and role=heading, in document order.
+  const heads = [...document.querySelectorAll("h1,h2,h3,h4,h5,h6,[role='heading'][aria-level]")].filter(shown).map((h) => ({
+    level: /^H\d$/.test(h.tagName) ? Number(h.tagName[1]) : Number(h.getAttribute("aria-level")) || 2, text: words(h),
+    top: Math.round(h.getBoundingClientRect().top + scrollY) }));
+  const breaks = [];
+  heads.forEach((h, i) => {
+    const prev = heads[i - 1];
+    if (prev && h.level > prev.level + 1) breaks.push({ from: `h${prev.level}`, to: `h${h.level}`, text: h.text, top: h.top });
+  });
+  // Calls to action in the first screen: buttons, and links styled as buttons (their own fill or border, and padding).
+  const vh = innerHeight;
+  const ctaLike = (el) => {
+    if (el.matches("button, [role='button'], input[type='submit'], input[type='button']")) return true;
+    const s = getComputedStyle(el);
+    const fill = (s.backgroundColor.match(/rgba?\(([^)]+)\)/)?.[1].split(/[ ,/]+/).map(Number) ?? [0, 0, 0, 0]);
+    const filled = fill.length > 3 ? fill[3] > 0.1 : fill.length === 3;
+    const bordered = parseFloat(s.borderTopWidth) >= 1 && s.borderTopStyle !== "none" && parseFloat(s.borderBottomWidth) >= 1;
+    return (filled || bordered) && parseFloat(s.paddingLeft) >= 8 && parseFloat(s.paddingTop) >= 4;
+  };
+  // The site's own header and navigation, not a page hero that happens to sit in a <header> (Oak's does).
+  const inChrome = (el) => {
+    if (el.closest("nav, [role='navigation']")) return true;
+    const h = el.closest("header, [role='banner']");
+    return !!h && h.getBoundingClientRect().height < 200;
+  };
+  const ctas = [], seen = new Set();
+  for (const el of document.querySelectorAll("a[href], button, [role='button'], input[type='submit'], input[type='button']")) {
+    if (seen.has(el) || !shown(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.top + scrollY >= vh || r.bottom + scrollY <= 0) continue;
+    if (!ctaLike(el)) continue;
+    const t = words(el);
+    if (!t || /^skip to/i.test(t)) continue;
+    seen.add(el);
+    ctas.push({ text: t, in_header: inChrome(el) || undefined, size: `${Math.round(r.width)}x${Math.round(r.height)}` });
+  }
+  const out = {
+    viewport: `${innerWidth}x${innerHeight}`,
+    headings: { count: heads.length, h1: heads.filter((h) => h.level === 1).length, first: heads[0] ? `h${heads[0].level}` : null,
+      order_breaks: breaks.slice(0, 10), outline: heads.slice(0, 40).map((h) => `h${h.level} ${h.text}`) },
+    ctas_above_fold: { count: ctas.length, outside_header: ctas.filter((c) => !c.in_header).length, list: ctas.slice(0, 12) },
+  };
+  // Tap targets, on a phone only: every link, button and form control a thumb would hit.
+  if (innerWidth < 600) {
+    const small = [];
+    let total = 0;
+    for (const el of document.querySelectorAll("a[href], button, [role='button'], input:not([type='hidden']), select, textarea, summary, label[for]")) {
+      if (!shown(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4) continue;
+      // A link inside running text is exempt in WCAG; count it apart.
+      const inline = el.tagName === "A" && getComputedStyle(el).display === "inline" && el.parentElement?.closest("p, li") && (el.parentElement.innerText || "").length > (el.innerText || "").length + 20;
+      if (inline) continue;
+      total++;
+      if (r.width < 44 || r.height < 44) small.push({ text: words(el) || el.tagName.toLowerCase(), size: `${Math.round(r.width)}x${Math.round(r.height)}`,
+        under_24: r.width < 24 || r.height < 24 || undefined, top: Math.round(r.top + scrollY) });
+    }
+    out.tap_targets = { checked: total, under_44: small.length, under_24: small.filter((x) => x.under_24).length,
+      smallest: small.sort((a, b) => { const ar = (x) => x.size.split("x").map(Number).reduce((p, q) => Math.min(p, q)); return ar(a) - ar(b); }).slice(0, 10) };
+  }
+  return out;
 }
 
 async function readType(browser, url, viewport, ua) {
@@ -413,6 +554,7 @@ async function readType(browser, url, viewport, ua) {
     await page.setExtraHTTPHeaders({ "accept-language": "en-GB,en;q=0.9" });
     const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 15000 }).catch(() => null);
     if (!resp) await page.waitForNetworkIdle({ idleTime: 500, timeout: 4000 }).catch(() => {});
+    const overlays = await clearOverlays(page);
     await page.evaluate(() => document.fonts?.ready).catch(() => {});
     // Scroll through first, so text that only appears on scroll (reveals, lazy sections) is counted.
     await page.evaluate(async () => {
@@ -422,7 +564,10 @@ async function readType(browser, url, viewport, ua) {
       window.scrollTo(0, 0);
     }).catch(() => {});
     await wait(500);
-    return await page.evaluate(typeAndIcons);
+    const type = await page.evaluate(typeAndIcons);
+    type.facts = await page.evaluate(pageFacts).catch((e) => ({ error: String(e?.message ?? e).slice(0, 120) }));
+    type.overlays = overlays;
+    return type;
   } finally {
     await page.close().catch(() => {});
   }
@@ -436,5 +581,132 @@ export async function measureType(browser, url, desktopUa, phoneUa, t0 = Date.no
     ? await readType(browser, url, { width: 390, height: 844, deviceScaleFactor: 1, isMobile: true, hasTouch: true }, phoneUa)
       .catch((e) => ({ error: String(e?.message ?? e).slice(0, 200) }))
     : null;
-  return { type_scale: { v: 1, measured_at: new Date().toISOString(), at_1440: desktop, at_390: phone } };
+  return { type_scale: { v: 2, measured_at: new Date().toISOString(), at_1440: desktop, at_390: phone } };
+}
+
+// #79: the whole page as tiles at native width, one per section, so a tall page stays legible (Oak at 4,683 px came
+// back as one image at 615 x 2000; Stripe at 15,000 px would be unreadable). Sections are found from the page's own
+// blocks (header, sections, footer, the top-level children of its main wrapper); small ones are grouped and tall
+// ones split, so each tile is between TILE_MIN and TILE_MAX px tall. Each tile is stitched from screen-sized frames,
+// like the whole-page shot, and returned as JPEG. A response stops at TILE_BYTES (Vercel's response limit is 4.5 MB)
+// or at 45 seconds and says where to carry on: call again with { from: next_from }.
+const TILE_MIN = 600, TILE_MAX = 2400, TILE_PAGE_MAX = 30000, TILE_BYTES = 2_600_000;
+
+// Runs in the page: the tops of its sections, with the first heading in each.
+function sectionTops() {
+  const vw = innerWidth;
+  const H = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0);
+  const absTop = (el) => Math.round(el.getBoundingClientRect().top + scrollY);
+  const wide = (el) => { const r = el.getBoundingClientRect(); return r.width >= vw * 0.6 && r.height >= 120; };
+  // Walk down through single wrappers (#__next > div > main ...) to the level where the page splits into blocks.
+  let node = document.body;
+  for (let i = 0; i < 8; i++) {
+    const kids = [...node.children].filter((k) => wide(k) && getComputedStyle(k).position !== "fixed");
+    if (kids.length === 1) node = kids[0]; else break;
+  }
+  const cands = new Set([...node.children, ...document.querySelectorAll("header, footer, section, main > *, [class*='section' i]")]);
+  const tops = [];
+  for (const el of cands) {
+    if (!(el instanceof Element) || !wide(el)) continue;
+    const s = getComputedStyle(el);
+    if (s.position === "fixed" || s.display === "none" || s.visibility === "hidden") continue;
+    const h = el.querySelector("h1, h2, h3");
+    tops.push({ top: absTop(el), label: (h?.innerText || el.getAttribute("aria-label") || "").trim().replace(/\s+/g, " ").slice(0, 60) || null });
+  }
+  return { tops: tops.sort((a, b) => a.top - b.top), height: H };
+}
+
+// Cut points from section tops: each tile ends at the last section top that keeps it under TILE_MAX, at least
+// TILE_MIN below where it starts; with none, it is cut at TILE_MAX. A short remainder joins the tile before it.
+export function planTiles(tops, H) {
+  const pts = [...new Set(tops.map((t) => t.top).filter((y) => y > 0 && y < H))].sort((a, b) => a - b);
+  const label = (y0, y1) => tops.find((t) => t.top >= y0 && t.top < y1 && t.label)?.label ?? null;
+  const tiles = [];
+  let start = 0;
+  while (start < H) {
+    let end = Math.min(H, start + TILE_MAX);
+    if (end < H) {
+      const fits = pts.filter((y) => y >= start + TILE_MIN && y <= start + TILE_MAX);
+      if (fits.length) end = fits[fits.length - 1];
+      if (H - end < TILE_MIN / 2 && H - start <= TILE_MAX + TILE_MIN / 2) end = H;
+    }
+    tiles.push({ top: start, bottom: end, section: label(start, end) });
+    start = end;
+  }
+  return tiles;
+}
+
+export async function measureTiles(browser, url, width, height, ua, from = 0, t0 = Date.now()) {
+  const page = await openPage(browser, url, { reduce: true, ua, record: false });
+  try {
+    await page.setViewport({ width, height, deviceScaleFactor: 1 });
+    const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 25000 }).catch(() => null);
+    if (!resp) await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => {});
+    const overlays = await clearOverlays(page);
+    // Scroll through once so lazy images and reveals load, then read where the sections start.
+    await page.evaluate(async (max) => {
+      const step = Math.max(400, Math.floor(innerHeight * 0.8));
+      for (let y = 0; y < Math.min(document.documentElement.scrollHeight, max); y += step) { scrollTo(0, y); await new Promise((r) => setTimeout(r, 110)); }
+      scrollTo(0, 0);
+    }, TILE_PAGE_MAX).catch(() => {});
+    await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => {});
+    const { tops, height: fullHeight } = await page.evaluate(sectionTops);
+    const H = Math.min(fullHeight, TILE_PAGE_MAX);
+    const plan = planTiles(tops, H);
+    const hideChrome = () => page.evaluate((vh) => {
+      for (const el of document.querySelectorAll("body *")) {
+        const s = getComputedStyle(el);
+        if ((s.position === "fixed" || s.position === "sticky") && el.getBoundingClientRect().height < vh * 0.4) el.style.setProperty("visibility", "hidden", "important");
+      }
+    }, height);
+    // A fixed or sticky header shows once, at the top of the first tile; later frames hide it, as the whole-page shot does.
+    let chromeHidden = false;
+    if (from > 0) { await hideChrome(); chromeHidden = true; }
+    // All frames first, then the compositing tab: a page in a background tab stops painting, and screenshots of it hang.
+    const shots = [];
+    let bytes = 0, next = null;
+    for (const [i, t] of plan.entries()) {
+      if (t.bottom <= from) continue;
+      // Frame bytes run close to the finished tile's, so they set the budget.
+      if (shots.length && (bytes > TILE_BYTES || Date.now() - t0 > 40000)) { next = t.top; break; }
+      const frames = [];
+      for (let y = t.top; y < t.bottom; y += height) {
+        await page.evaluate((y) => scrollTo(0, y), Math.min(y, Math.max(0, fullHeight - height)));
+        await wait(200);
+        const real = await page.evaluate(() => Math.round(scrollY));
+        const data = (await page.screenshot({ type: "jpeg", quality: 85 })).toString("base64");
+        bytes += data.length * 0.75;
+        frames.push({ y: real - t.top, data });
+        if (!chromeHidden) { await hideChrome(); chromeHidden = true; }
+      }
+      shots.push({ i, t, frames });
+    }
+    const out = [];
+    const sheet = await browser.newPage();
+    try {
+      for (const { i, t, frames } of shots) {
+        const b64 = await sheet.evaluate(async (frames, W, Ht) => {
+          const c = document.createElement("canvas");
+          c.width = W; c.height = Ht;
+          const g = c.getContext("2d");
+          g.fillStyle = "#fff"; g.fillRect(0, 0, W, Ht);
+          // Later frames first, so an earlier frame wins any overlap (the last frame of a page is pulled up to fit).
+          for (const f of [...frames].reverse()) {
+            const im = new Image(); im.src = `data:image/jpeg;base64,${f.data}`; await im.decode();
+            g.drawImage(im, 0, f.y);
+          }
+          return c.toDataURL("image/jpeg", 0.8).split(",")[1];
+        }, frames, width, t.bottom - t.top);
+        out.push({ index: i + 1, top: t.top, height: t.bottom - t.top, section: t.section, image: b64 });
+      }
+    } finally {
+      await sheet.close().catch(() => {});
+    }
+    return { tiles: out, total: plan.length, page_height: fullHeight, clipped: fullHeight > TILE_PAGE_MAX, next_from: next, width, overlays,
+      status: resp?.status() ?? null };
+  } catch (e) {
+    return { error: String(e?.message ?? e).slice(0, 200), stage: "tiles" };
+  } finally {
+    await page.close().catch(() => {});
+  }
 }

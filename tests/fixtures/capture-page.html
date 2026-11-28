@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta name=viewport content="width=device-width"><title>Test</title>
+<style>body{margin:0;font-family:sans-serif} header{position:sticky;top:0;background:#123;color:#fff;padding:20px;height:40px;z-index:5}
+section{padding:40px} .hero{height:700px;background:#eef} .a{height:500px;background:#fee}.b{height:400px;background:#efe}.c{height:3100px;background:linear-gradient(#fff,#ccc)}.d{height:900px;background:#ffd}
+footer{height:300px;background:#222;color:#ccc}
+#cc{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10}#cc .box{position:fixed;bottom:20px;left:20px;right:20px;background:#fff;padding:20px}
+.low{color:#aaa} .btn{background:#06c;color:#fff;padding:12px 20px;text-decoration:none;display:inline-block}
+.tiny{font-size:11px}</style></head><body style="overflow:hidden">
+<header><a href="/" >Home</a> <a href="/x" class="btn">Sign up</a></header>
+<section class="hero"><h1>Big hero</h1><p class="low">Low contrast grey text here</p><a class="btn" href="/go">Get started</a> <button>Learn more</button> <a href="/t" class="tiny">tiny link</a></section>
+<section class="a"><h2>Section A</h2><h4>Skipped level</h4><p>Body text</p></section>
+<section class="b"><h2>Section B</h2></section>
+<section class="c"><h2>Very tall C</h2></section>
+<section class="d"><h3>D</h3></section>
+<footer>Footer</footer>
+<div id="cc"><div class="box" role="dialog">We use cookies to improve your experience. <button>Accept all</button> <button>Reject all</button></div></div>
+<script>document.querySelectorAll('#cc button').forEach(b=>b.onclick=()=>{document.getElementById('cc').remove();document.body.style.overflow=''})</script>
+</body></html>

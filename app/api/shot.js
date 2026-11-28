@@ -12,13 +12,17 @@
 //   rendered size and distance from the top; videos counts video players. motion holds up to two motion strips
 //   ({ where, top, image, changed_pct }: three frames a second apart, side by side), only for parts that move.
 //   Pass motion: false to skip them.
-// POST { url, measure: "motion" | "type" } measures instead of shooting (HOP-55, 56, 57; see _measure.js):
-//   motion -> { motion, strips, status }, type -> { type_scale }. Each fits in its own call's 60 seconds.
+// POST { url, measure: "motion" | "type" | "tiles", from? } measures instead of shooting (HOP-55, 56, 57, #77, #79;
+//   see _measure.js): motion -> { motion, strips, status }, type -> { type_scale } (with contrast and page facts),
+//   tiles -> { tiles: [{ index, top, height, section, image }], total, page_height, next_from } (call again with
+//   from: next_from for the rest). Each fits in its own call's 60 seconds.
+// Every load first clears consent and app banners (_overlays.js, #71); the response's overlays says what was done.
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
-import { measureMotion, measureType } from "./_measure.js";
+import { measureMotion, measureTiles, measureType } from "./_measure.js";
+import { clearOverlays } from "./_overlays.js";
 
 // The Claude API takes images up to 8000 px on a side and 5 MB, and the design read sends the stored image as is,
 // so the full-page shot stays inside both. Pages taller than 8000 px are shot scaled down (whole page, smaller), but
@@ -243,6 +247,10 @@ export async function capture(url, width, height, wantFull, lite, wantMotion = f
     const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: lite ? 15000 : 25000 }).catch(() => null);
     if (!resp) await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => {});
     out.status = resp?.status() ?? null;
+    // #71: the consent banner's reject option, or hide what's still over the page, and say which.
+    stage = "overlays";
+    out.overlays = await clearOverlays(page);
+    stage = "load";
 
     if (!lite) {
       // Scroll through once so lazy images and scroll-triggered sections load, then back to the top.
@@ -310,8 +318,9 @@ export async function capturePhone(url) {
     await page.setExtraHTTPHeaders({ "accept-language": "en-GB,en;q=0.9" });
     const resp = await page.goto(url, { waitUntil: "networkidle2", timeout: 15000 }).catch(() => null);
     if (!resp) await page.waitForNetworkIdle({ idleTime: 500, timeout: 4000 }).catch(() => {});
+    const overlays = await clearOverlays(page);
     await new Promise((r) => setTimeout(r, 600));
-    return { phone: await page.screenshot({ type: "jpeg", quality: 80 }), title: await page.title().catch(() => null) };
+    return { phone: await page.screenshot({ type: "jpeg", quality: 80 }), title: await page.title().catch(() => null), overlays };
   } catch (e) {
     const error = String(e?.message ?? e).slice(0, 300);
     console.error("phone shot failed", url, error);
@@ -338,13 +347,15 @@ export default async function handler(req, res) {
   const wantMotion = body.motion !== false;
   const started = Date.now();
 
-  if (body.measure === "motion" || body.measure === "type") {
+  if (body.measure === "motion" || body.measure === "type" || body.measure === "tiles") {
     let browser;
     try {
       browser = await launch(width, height);
       const out = body.measure === "motion"
         ? await measureMotion(browser, url, width, height, DESKTOP_UA, started)
-        : await measureType(browser, url, DESKTOP_UA, PHONE_UA, started);
+        : body.measure === "tiles"
+          ? await measureTiles(browser, url, width, height, DESKTOP_UA, Math.max(0, Number(body.from) || 0), started)
+          : await measureType(browser, url, DESKTOP_UA, PHONE_UA, started);
       if (out.error) return res.status(502).json(out);
       return res.status(200).json(out);
     } catch (e) {
@@ -365,11 +376,12 @@ export default async function handler(req, res) {
     }
   }
   // The phone screen comes last and only while there's time left in the function's 60 seconds.
-  let phone = null, phoneError = null;
+  let phone = null, phoneError = null, phoneOverlays = null;
   if (wantPhone && Date.now() - started < 38000) {
     const p = await capturePhone(url);
     phone = p.phone;
     phoneError = p.error ?? null;
+    phoneOverlays = p.overlays ?? null;
     r.title = r.title ?? p.title ?? null;
   }
   if (!r.first && !phone) return res.status(502).json({ error: r.error ?? phoneError ?? "no screenshot", stage: r.stage ?? (phoneError ? "phone" : undefined) });
@@ -379,6 +391,6 @@ export default async function handler(req, res) {
     phone: phone ? Buffer.from(phone).toString("base64") : null,
     width, height, full_height: r.fullHeight, full_scale: Math.round(r.scale * 100) / 100, clipped: r.clipped,
     title: r.title, final_url: r.finalUrl, status: r.status, meta: r.meta ?? null, figures: r.figures ?? [], videos: r.videos ?? null,
-    motion: r.motion ?? [],
+    motion: r.motion ?? [], overlays: r.overlays ?? null, phone_overlays: phoneOverlays,
   });
 }

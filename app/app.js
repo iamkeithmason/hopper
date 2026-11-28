@@ -661,7 +661,7 @@ function paletteStrip(palette) {
   return el("div", { class: "palette" }, strip, label);
 }
 // Images saved on their own (not screenshots or figures of a captured page). Captured pages get their own sections.
-const SHOT_ROLES = ["first-screen-1440", "first-screen-390", "full-page", "motion-strip"];
+const SHOT_ROLES = ["first-screen-1440", "first-screen-390", "full-page", "page-tile", "motion-strip"];
 const standalone = (n) => (n.images || []).filter((i) => !i.page || !(n.links || []).some((l) => l.url === i.page));
 // A note with captured pages leads with the pages; images saved before the capture follow them, compact, as figures do.
 const hasPages = (n) => (n.links || []).some((l) => l.page_read) || (n.images || []).some((i) => SHOT_ROLES.includes(i.role));
@@ -818,7 +818,9 @@ function capturedPages(n) {
     const byTop = (a, b) => (a.top ?? 0) - (b.top ?? 0);
     const first = shots.find((i) => i.role === "first-screen-1440");
     const phone = shots.find((i) => i.role === "first-screen-390");
-    const whole = shots.filter((i) => i.role === "full-page").sort(byTop);
+    // #79: a page kept as section tiles at native width shows those, stacked; otherwise the scaled whole-page shot.
+    const tiles = shots.filter((i) => i.role === "page-tile").sort(byTop);
+    const whole = tiles.length ? tiles : shots.filter((i) => i.role === "full-page").sort(byTop);
     const motion = shots.filter((i) => i.role === "motion-strip").sort(byTop);
     const figures = mine.filter((i) => i.role === "figure").sort(byTop);
     const thumb = (i, label, cls) => i ? el("a", { class: `pg-thumb ${cls}`, href: i.url, target: "_blank", rel: "noopener" },

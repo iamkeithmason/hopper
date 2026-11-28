@@ -356,7 +356,17 @@ function background(p: Promise<unknown>) {
 type Figure = { src: string; alt?: string; caption?: string; width: number; height: number; top: number };
 type Shot = { first: string | null; full: string | null; phone: string | null; width: number; height: number; full_height: number | null; full_scale?: number; clipped: boolean; title: string | null;
   figures?: Figure[]; videos?: number | null; motion?: { where: string; top: number; image: string; changed_pct: number }[];
-  status?: number | null; meta?: { image?: string | null; description?: string | null } | null };
+  status?: number | null; meta?: { image?: string | null; description?: string | null } | null;
+  overlays?: Overlays | null; phone_overlays?: Overlays | null };
+// #71: what the capture browser did about consent and app banners before shooting (see app/api/_overlays.js).
+type Overlays = { action: "rejected" | "hidden" | "none"; clicked?: string; hidden?: string[] };
+function overlayNote(o?: Overlays | null) {
+  if (!o || o.action === "none") return "";
+  const parts: string[] = [];
+  if (o.clicked) parts.push(`chose "${o.clicked}" on the consent banner`);
+  if (o.hidden?.length) parts.push(`hid ${o.hidden.length === 1 ? "an overlay" : `${o.hidden.length} overlays`} (${o.hidden.slice(0, 3).join(", ")})`);
+  return parts.length ? `. Before the shot, Hopper ${parts.join(", then ")}` : "";
+}
 const ROLES = ["first-screen-1440", "full-page", "first-screen-390"];
 async function takeShot(url: string, roles = ROLES, motion = true): Promise<Shot | { error: string }> {
   try {
@@ -379,7 +389,8 @@ async function takeShot(url: string, roles = ROLES, motion = true): Promise<Shot
 // motion (what moves, how long, which easing, how far, staggers, load or scroll, what reduced motion keeps, which
 // library) and type (text treatments with their roles, and icon sizes, at 1440 and 390). Both go on the page's link
 // (note_links.motion, type_scale). Strips of the entrance and the first scroll reveal join the page's motion strips.
-// Measurements cost no model credit. Locked and binned notes are left alone.
+// Alongside them, the page as section tiles (#79, keepTiles). Measurements cost no model credit. Locked and binned notes
+// are left alone.
 async function shotCall(body: Record<string, unknown>) {
   const [cfg] = await sql`select (select value from hopper.settings where key = 'shot_url') as shot_url,
     (select decrypted_secret from vault.decrypted_secrets where name = 'hopper_shot_token') as tok`;
@@ -394,8 +405,9 @@ async function shotCall(body: Record<string, unknown>) {
 async function measurePage(noteId: string, pageUrl: string) {
   const [n] = await sql`select is_locked, deleted_at from hopper.notes where id = ${noteId}`;
   if (!n || n.is_locked || n.deleted_at) return { error: "not available" };
-  const [motion, type] = await Promise.all([shotCall({ url: pageUrl, measure: "motion" }), shotCall({ url: pageUrl, measure: "type" })]);
-  const out: Record<string, unknown> = {};
+  const [motion, type, tiles] = await Promise.all([shotCall({ url: pageUrl, measure: "motion" }), shotCall({ url: pageUrl, measure: "type" }),
+    keepTiles(noteId, pageUrl)]);
+  const out: Record<string, unknown> = { ...tiles };
   if (!motion.error && motion.motion) {
     await sql`update hopper.note_links set motion = ${sql.json(motion.motion)} where note_id = ${noteId} and url = ${pageUrl}`;
     out.motion = true;
@@ -438,6 +450,50 @@ async function measurePage(noteId: string, pageUrl: string) {
   return out;
 }
 
+// #79: the page as tiles at native width, one per section (shot.js measure "tiles", in as many calls as its size needs),
+// as image_role 'page-tile' with each tile's top. Tiles are for close reading (get_reference, the note view); the page
+// read keeps using the scaled whole page, so new tiles never ask for a paid read. A retake replaces the page's tiles.
+async function keepTiles(noteId: string, pageUrl: string) {
+  const stem = `${slugOf(pageUrl)}-${(await sha256(pageUrl)).slice(0, 6)}`;
+  const keep: string[] = [];
+  let from = 0, total = 0, error: string | null = null;
+  for (let call = 0; call < 6; call++) {
+    const r: any = await shotCall({ url: pageUrl, measure: "tiles", from });
+    if (r.error || !Array.isArray(r.tiles)) { error = r.error ?? "no tiles"; break; }
+    total = r.total ?? total;
+    const note = overlayNote(r.overlays);
+    for (const t of r.tiles) {
+      if (typeof t.image !== "string") continue;
+      const bytes = decodeBase64(t.image);
+      const path = `shot/${noteId}/${stem}--tile-${t.index}.jpg`;
+      const { error: up } = await storage.upload(path, bytes, { contentType: "image/jpeg", upsert: true });
+      if (up) continue;
+      const size = pictureSize(bytes);
+      const original = `capture:${pageUrl}#page-tile-${t.index}`;
+      const caption = `Tile ${t.index} of ${r.total}: ${t.top} to ${t.top + t.height} px down the page at ${r.width ?? 1440} wide` +
+        `${t.section ? `, from the section "${t.section}"` : ""}${note}`;
+      await sql`insert into hopper.attachments (note_id, original_file, storage_path, mime, width, height, caption,
+                  image_role, source_page_url, position_from_top_px_at_1440, captured_on, content_sha256)
+                values (${noteId}, ${original}, ${path}, 'image/jpeg', ${size?.width ?? null}, ${size?.height ?? null}, ${caption},
+                  'page-tile', ${pageUrl}, ${t.top}, current_date, ${await bytesHash(bytes)})
+                on conflict (note_id, original_file) do update set storage_path = excluded.storage_path, width = excluded.width,
+                  height = excluded.height, caption = excluded.caption, position_from_top_px_at_1440 = excluded.position_from_top_px_at_1440,
+                  captured_on = excluded.captured_on, content_sha256 = excluded.content_sha256, design_read = null`;
+      keep.push(original);
+    }
+    if (r.next_from == null || r.next_from <= from) break;
+    from = r.next_from;
+  }
+  // Only a complete set replaces the old one: a failed call leaves what was there.
+  if (!error && keep.length) {
+    const gone = await sql`delete from hopper.attachments where note_id = ${noteId} and source_page_url = ${pageUrl}
+                             and image_role = 'page-tile' and not (original_file = any(${keep}::text[])) returning storage_path`;
+    const paths = gone.map((g: any) => g.storage_path).filter(Boolean);
+    if (paths.length) await storage.remove(paths);
+  }
+  return error ? { tiles: keep.length, tiles_error: error } : { tiles: keep.length, tiles_total: total };
+}
+
 // Tall pages come back scaled down (to fit the 8000 px image limit), and past 40% cut short.
 function fullCaption(s: Shot) {
   const pct = s.full_scale && s.full_scale < 1 ? `, at ${Math.round(s.full_scale * 100)}% size` : "";
@@ -458,9 +514,9 @@ const slugOf = (u: string) => {
 async function keepShots(noteId: string, shot: Shot, pageUrl: string) {
   const stem = `${slugOf(pageUrl)}-${(await sha256(pageUrl)).slice(0, 6)}`;
   const parts: [string, string | null, string, number, number | null][] = [
-    ["first-screen-1440", shot.first, `First screen at ${shot.width} x ${shot.height}`, shot.width, shot.height],
-    ["full-page", shot.full, fullCaption(shot), shot.width, shot.full_height],
-    ["first-screen-390", shot.phone, "First screen on a phone, 390 x 844 at 2x", 780, 1688],
+    ["first-screen-1440", shot.first, `First screen at ${shot.width} x ${shot.height}${overlayNote(shot.overlays)}`, shot.width, shot.height],
+    ["full-page", shot.full, `${fullCaption(shot)}${overlayNote(shot.overlays)}`, shot.width, shot.full_height],
+    ["first-screen-390", shot.phone, `First screen on a phone, 390 x 844 at 2x${overlayNote(shot.phone_overlays)}`, 780, 1688],
   ];
   let kept = 0;
   for (const [role, b64, caption, w, h] of parts) {
