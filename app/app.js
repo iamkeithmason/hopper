@@ -1053,8 +1053,11 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
 (function pullToDismiss() {
   const sheet = $("d-sheet"), body = $("d-body"), overlay = $("detail");
   let y0 = null, dy = 0, t0 = 0, pulling = false;
+  // Under reduced motion the sheet still follows the finger (that is the finger's own movement), but it settles or
+  // leaves at once instead of gliding.
+  const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
   const springBack = () => {
-    sheet.style.transition = "transform var(--dur-exit) var(--ease-sheet)";
+    sheet.style.transition = still() ? "none" : "transform var(--dur-exit) var(--ease-sheet)";
     sheet.style.transform = ""; overlay.style.backgroundColor = "";
     setTimeout(() => (sheet.style.transition = ""), 220);
   };
@@ -1089,6 +1092,7 @@ $("detail").addEventListener("click", (e) => { if (e.target.id === "detail") $("
     pulling = false; sheet.classList.remove("pulling");
     const flick = dy / Math.max(1, Date.now() - t0) > 0.6;
     if (dy > 120 || (flick && dy > 40)) {
+      if (still()) return $("detail-close").click(); // closing saves any pending edits
       sheet.style.transition = "transform var(--dur-exit) var(--ease-out)"; // leaving: fast start, no ease-in lag
       sheet.style.transform = "translateY(100%)";
       setTimeout(() => $("detail-close").click(), 190); // closing saves any pending edits
