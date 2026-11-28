@@ -3,6 +3,7 @@ import postgres from "npm:postgres@3.4.4";
 import { decodeBase64, encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { measure, imageSize } from "./palette.ts";
 
+// Kinds "palette", "diagram" and "map" added 28 Nov 2026 (stress test: these were being filed as "other").
 // Hopper design teardown (HOP-20), version 4: pages are read as pages. A page captured as screenshots (first screens at
 // 1440 and 390, the whole page) gets ONE page read, stored on its link (note_links.layout_read): what the first screen
 // shows and promises, structure and rhythm, use of width, image treatment, type and colour, moves, motion, strengths,
@@ -53,7 +54,7 @@ const strs = (description: string, max = 8) => ({ type: "array", items: { type: 
 const obj = (properties: Record<string, unknown>) => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
 
 const KINDS = ["app-ui", "web-ui", "dashboard", "brand-identity", "logo", "poster", "editorial", "game-layout", "packaging",
-  "typography", "illustration", "photography", "product", "interior", "data-viz", "other"];
+  "typography", "illustration", "photography", "product", "interior", "data-viz", "palette", "diagram", "map", "other"];
 const ROLES = ["background", "surface", "text", "accent", "brand", "secondary", "imagery"];
 
 // The tool schema is built per request: aesthetics must come from the shared vocabulary (hopper.aesthetics).
@@ -101,11 +102,11 @@ const systemPrompt = (vocab: { name: string; grp: string; description: string }[
 
 For each image, call record_design_read exactly once and write nothing else.
 
-IS IT A REFERENCE? True for interfaces, websites, brand and identity work, logos, posters, editorial and book design, packaging, typography specimens, illustration or photography kept for its style, product, interior and data-visualisation design. False for photos of text or book pages, documents, receipts, chat screenshots, memes kept for their words, and ordinary snapshots. For a non-reference, give is_reference false, kind, a summary and confidence, and leave every other field empty ("" or []), with density "n/a".
+IS IT A REFERENCE? True for interfaces, websites, brand and identity work, logos, posters, editorial and book design, packaging, typography specimens, illustration or photography kept for its style, product, interior and data-visualisation design, colour palettes, UX and process diagrams, and maps. False for photos of text or book pages, documents, receipts, chat screenshots, memes kept for their words, and ordinary snapshots. For a non-reference, give is_reference false, kind, a summary and confidence, and leave every other field empty ("" or []), with density "n/a".
 
 PALETTE: a measured palette follows the image, as hex values with the share of the image each covers. Choose palette colours ONLY from that list, copying hex values exactly, and give each a role. Large shares are usually background or surface; a small saturated share is often the accent. Use role "imagery" for colours that come from photographs inside the design rather than from the design system. Skip measured colours that are only JPEG noise or anti-aliasing.
 
-KIND: a page kept for its overall layout (an article, a blog post, a magazine spread) is "editorial" even when an illustration or photograph dominates it; the owner saved the page, so read how the image works within it. Use "illustration" or "photography" only when the image fills the whole frame. Use "game-layout" for tabletop and RPG rulebook pages, game manuals and zines judged as layout references, so they can be searched apart from editorial design. A close-up of a single rules table kept for its rules is not a reference.
+KIND: a page kept for its overall layout (an article, a blog post, a magazine spread) is "editorial" even when an illustration or photograph dominates it; the owner saved the page, so read how the image works within it. Use "illustration" or "photography" only when the image fills the whole frame. Use "game-layout" for tabletop and RPG rulebook pages, game manuals and zines judged as layout references, so they can be searched apart from editorial design. A close-up of a single rules table kept for its rules is not a reference. Use "palette" for a colour palette card or swatch set, "diagram" for process and UX documentation drawn as a diagram (story maps, user flows, sitemaps, journey maps, synthesis boards), and "map" for a map or cartography, drawn or digital. Use "other" only when none of the kinds fit.
 
 TYPOGRAPHY: classify what you see. Name a typeface family only when you genuinely recognise it, with an honest confidence; a wrong name is worse than none.
 
