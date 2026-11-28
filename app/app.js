@@ -309,6 +309,20 @@ function mediaMark(m) {
   return el("span", { class: `c-kind k-${m.kind}`, title: label, "aria-label": label }, icon(`m-${m.kind}`), m.kind === "set" ? el("b", {}, String(m.count)) : null);
 }
 
+// ---------- flipped phone feed (trial) ----------
+// Below 700px the board runs bottom-up, like a chat: the newest note sits by the bar (and its ＋ and search), older
+// notes run upward, and the page opens scrolled to the bottom. CSS reverses the order; the code keeps the view
+// still while things load above it, by holding the distance from the bottom of the page.
+const flipped = () => matchMedia("(max-width: 699px)").matches;
+const fromBottom = () => { const d = document.scrollingElement; return Math.max(0, d.scrollHeight - scrollY - d.clientHeight); };
+function holdBottom(fn) {
+  if (!flipped()) return fn();
+  const d = document.scrollingElement, gap = fromBottom();
+  const out = fn();
+  window.scrollTo({ top: d.scrollHeight - d.clientHeight - gap, behavior: "instant" });
+  return out;
+}
+
 // ---------- masonry ----------
 // Each card goes into the shortest column once and never moves. (CSS columns re-flowed the whole board whenever a
 // batch loaded or an image arrived, so cards jumped between columns while scrolling.) data-seq keeps the
@@ -363,7 +377,7 @@ addEventListener("resize", () => {
     for (const box of [$("pinned"), $("feed")]) {
       if (Number(box.dataset.cols) === colCount()) continue;
       const cards = [...box.querySelectorAll(":scope > .col > .card")].sort((a, b) => a.dataset.seq - b.dataset.seq);
-      layout(box, cards);
+      holdBottom(() => layout(box, cards));
     }
   }, 150);
 });
@@ -375,8 +389,7 @@ async function loadPinned() {
     const { notes } = await api({ action: "feed", pinned: true, project_id: state.project, topic: state.topic, limit: 40 });
     const cards = notes.map(card);
     await sizeImages(cards);
-    wrap.hidden = notes.length === 0;
-    layout($("pinned"), cards);
+    holdBottom(() => { wrap.hidden = notes.length === 0; layout($("pinned"), cards); });
   } catch { wrap.hidden = true; }
 }
 
@@ -403,7 +416,8 @@ function clearSkeletons(box, sk) {
 function resetFeed() {
   renderBar();
   state.oldest = null; state.binOffset = 0; state.done = false; layout($("feed")); $("status").textContent = "";
-  window.scrollTo({ top: 0 });
+  // On the flipped phone feed the newest notes are at the bottom, so a fresh board starts there.
+  window.scrollTo({ top: flipped() ? document.scrollingElement.scrollHeight : 0, behavior: "instant" });
   loadPinned();
   loadMore();
 }
@@ -412,14 +426,13 @@ async function loadMore() {
   if (state.loading || state.done) return;
   state.loading = true;
   const gen = $("feed").gen; // a reset while this batch loads makes it stale
-  const feed = $("feed"), sk = showSkeletons(feed), fresh = !hasCards(feed);
+  const feed = $("feed"), sk = holdBottom(() => showSkeletons(feed)), fresh = !hasCards(feed);
   // Placing a batch: the skeletons go first, so the columns measure true; cards replacing a whole empty board fade in.
   const placeSized = async (box, cards, g) => {
     await sizeImages(cards);
     if (box.gen !== g) return false;
-    clearSkeletons(box, sk);
     if (fresh) cards.forEach((c) => { c.classList.add("arrive"); c.addEventListener("animationend", () => c.classList.remove("arrive"), { once: true }); });
-    place(box, cards);
+    holdBottom(() => { clearSkeletons(box, sk); place(box, cards); });
     return true;
   };
   try {
@@ -447,7 +460,7 @@ async function loadMore() {
       }
     }
   } catch (e) { if ($("feed").gen === gen) { $("status").textContent = e.message; state.done = true; } }
-  clearSkeletons(feed, sk);
+  holdBottom(() => clearSkeletons(feed, sk));
   state.loading = false;
   // The observer only fires when "more" crosses into range. If a batch didn't push it back out (a tall screen,
   // short cards), nothing would fire again, so look again: observing afresh reports the current state.
@@ -464,12 +477,13 @@ $("q").addEventListener("input", () => {
 });
 $("search-form").addEventListener("submit", (e) => { e.preventDefault(); clearTimeout(searchTimer); state.q = $("q").value.trim(); $("q").blur(); resetFeed(); });
 
-// Header hides as you scroll down and comes back as you scroll up.
+// Header hides as you scroll down and comes back as you scroll up. On the flipped phone feed the past is upward, so
+// the bar hides as you scroll up into older notes and comes back as you head down towards the newest.
 let lastY = 0;
 addEventListener("scroll", () => {
   const y = scrollY;
   $("top").classList.toggle("hide", y > lastY && y > 120);
-  $("lbar").classList.toggle("hide", y > lastY && y > 120);
+  $("lbar").classList.toggle("hide", flipped() ? y < lastY && fromBottom() > 120 : y > lastY && y > 120);
   lastY = y;
 }, { passive: true });
 
