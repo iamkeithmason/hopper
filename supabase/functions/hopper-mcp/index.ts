@@ -991,7 +991,7 @@ async function handle(msg: any) {
       return ok({
         protocolVersion: typeof params?.protocolVersion === "string" ? params.protocolVersion : PROTOCOL,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "hopper", title: "Hopper", version: "1.15.0" },
+        serverInfo: { name: "hopper", title: "Hopper", version: "1.16.0" },
         instructions: INSTRUCTIONS,
       });
     case "ping":
