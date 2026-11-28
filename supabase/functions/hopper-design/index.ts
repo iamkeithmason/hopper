@@ -28,6 +28,8 @@ import { measure, imageSize } from "./palette.ts";
 //   { next: n, write?, model?, stale? }     next n images (max 2) with no design read yet, newest first;
 //                                           with stale, also reference reads from an older READ_VERSION
 //   { set: id, write?, model? }             HOP-31: one read of a note's images as a set (Sonnet 5.5 by default)
+//   { attachments: [...], write?, redo?, model? }  up to 2 named images (by attachment id, up to 10 given), no page
+//                                           reads: to re-read chosen images, e.g. after new kinds (28 Nov 2026)
 // Two images a call, one after another: decoding more ran past the edge function's compute limit.
 // write defaults to false (dry run: returns the reads without saving). redo re-reads images already read
 // (and, with pages: true, pages too). images_only skips page reads. Each call reads one waiting page, or else images.
@@ -590,14 +592,16 @@ Deno.serve(async (req: Request) => {
 
     const ids: string[] | null = Array.isArray(body.ids) ? body.ids : null;
     if (ids && ids.length > 10) return new Response("send up to 10 ids", { status: 400 });
-    if (!ids && !body.next) return new Response("nothing to do", { status: 400 });
-    const limit = ids ? 2 : Math.min(Number(body.next), 2);
+    const only: string[] | null = Array.isArray(body.attachments) ? body.attachments : null;
+    if (only && only.length > 10) return new Response("send up to 10 attachments", { status: 400 });
+    if (!ids && !only && !body.next) return new Response("nothing to do", { status: 400 });
+    const limit = ids || only ? 2 : Math.min(Number(body.next), 2);
 
     // Images come through notes_for_ai, which holds unlocked notes only, so locked notes never reach the model.
     // Only notes the tagger has already cleared (tagged_at set) are read, so a new capture is never read
     // before the sensitive check has had the chance to lock it.
     // A page read first, when one is waiting (one a call: it sends several images). Then images, if no page was read.
-    const pages = body.images_only === true ? [] : await pendingPages(ids, redo && body.pages === true, 1);
+    const pages = body.images_only === true || only ? [] : await pendingPages(ids, redo && body.pages === true, 1);
     const atts = pages.length ? [] : await sql`
       select a.id, a.note_id, a.storage_path, a.mime, n.why_saved,
         a.image_role, a.rendered_width_at_1440, a.rendered_height_at_1440, a.caption_on_page,
@@ -606,6 +610,7 @@ Deno.serve(async (req: Request) => {
       from hopper.attachments a join hopper.notes_for_ai n on n.id = a.note_id
       where a.storage_path is not null and n.tagged_at is not null and ${sql.unsafe(PER_IMAGE)}
         and (${ids}::uuid[] is null or a.note_id = any(${ids}::uuid[]))
+        and (${only}::uuid[] is null or a.id = any(${only}::uuid[]))
         and (${redo}::boolean or a.design_read is null
              or (${stale}::boolean and (a.design_read->>'is_reference')::boolean
                  and coalesce((a.design_read->>'v')::int, 0) < ${READ_VERSION}))
@@ -632,7 +637,7 @@ Deno.serve(async (req: Request) => {
       results.push({ attachment_id: a.id, note_id: a.note_id, ...out });
     }
     // Nothing single waiting: read one waiting set (the sweep's call, ids not given).
-    if (!pages.length && !(atts as any[]).length && !ids && write) {
+    if (!pages.length && !(atts as any[]).length && !ids && !only && write) {
       const [w] = await sql`select id from hopper.sets_waiting() as id limit 1`;
       if (w) {
         const setModel = MODELS.includes(body.set_model) ? body.set_model : SET_MODEL;
