@@ -405,8 +405,10 @@ function typeAndIcons() {
     }
     tr.uses++; tr.chars += t.length; total += t.length;
     const fg = rgba(s.color), bk = behind(el);
-    if (fg && bk.image) tr.c_image++;
-    else if (fg) {
+    // Glyph-only text ("_", ",", icon-font characters) says nothing about readable contrast.
+    const readable = /[\p{L}\p{N}]/u.test(t);
+    if (fg && bk.image && readable) tr.c_image++;
+    else if (fg && readable) {
       const f = fg[3] < 1 ? over(fg, bk.bg) : fg;
       const L1 = lum(f), L2 = lum(bk.bg);
       const ratio = (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
@@ -480,8 +482,9 @@ function pageFacts() {
     const s = getComputedStyle(el);
     return s.visibility !== "hidden" && s.display !== "none" && parseFloat(s.opacity) > 0.05;
   };
-  const words = (el) => (el.innerText || el.getAttribute("aria-label") || el.value || el.title || el.querySelector?.("img[alt]")?.alt || "")
-    .trim().replace(/\s+/g, " ").slice(0, 50);
+  // Visible text first, unless it is only glyphs (an icon font's "_"): then the accessible name.
+  const words = (el) => [el.innerText, el.getAttribute("aria-label"), el.value, el.title, el.querySelector?.("img[alt]")?.alt]
+    .map((x) => (x || "").trim().replace(/\s+/g, " ")).find((x) => /[\p{L}\p{N}]/u.test(x))?.slice(0, 50) ?? "";
   // Headings, h1 to h6 and role=heading, in document order.
   const heads = [...document.querySelectorAll("h1,h2,h3,h4,h5,h6,[role='heading'][aria-level]")].filter(shown).map((h) => ({
     level: /^H\d$/.test(h.tagName) ? Number(h.tagName[1]) : Number(h.getAttribute("aria-level")) || 2, text: words(h),
@@ -522,7 +525,7 @@ function pageFacts() {
     viewport: `${innerWidth}x${innerHeight}`,
     headings: { count: heads.length, h1: heads.filter((h) => h.level === 1).length, first: heads[0] ? `h${heads[0].level}` : null,
       order_breaks: breaks.slice(0, 10), outline: heads.slice(0, 40).map((h) => `h${h.level} ${h.text}`) },
-    ctas_above_fold: { count: ctas.length, outside_header: ctas.filter((c) => !c.in_header).length, list: ctas.slice(0, 12) },
+    ctas_above_fold: { count: ctas.length, outside_header: ctas.filter((c) => !c.in_header).length, list: [...ctas.filter((c) => !c.in_header), ...ctas.filter((c) => c.in_header)].slice(0, 12) },
   };
   // Tap targets, on a phone only: every link, button and form control a thumb would hit.
   if (innerWidth < 600) {
